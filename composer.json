@@ -1,37 +1,42 @@
 {
-    "name": "toppy/async-view-model",
-    "description": "Framework-agnostic async view model resolution with AmPHP Fibers",
-    "type": "library",
-    "license": "proprietary",
-    "autoload": {
-        "psr-4": {
-            "Toppy\\AsyncViewModel\\": "src/"
-        }
-    },
-    "autoload-dev": {
-        "psr-4": {
-            "Toppy\\AsyncViewModel\\Tests\\": "tests/"
-        }
-    },
-    "require": {
-        "php": ">=8.4",
-        "amphp/amp": "^3.0",
-        "amphp/http-client": "^5.0",
-        "psr/container": "^2.0",
-        "psr/log": "^3.0"
-    },
-    "require-dev": {
-        "phpunit/phpunit": "^12.5",
-        "symfony/dependency-injection": "^8.0"
-    },
-    "suggest": {
-        "symfony/dependency-injection": "Required for ToppyAsyncViewModelBundle"
-    },
-    "extra": {
-        "symfony": {
-            "bundles": {
-                "Toppy\\AsyncViewModel\\Bundle\\ToppyAsyncViewModelBundle": ["all"]
-            }
-        }
+  "name": "toppy/async-view-model",
+  "description": "Framework-agnostic async view model resolution with AmPHP Fibers",
+  "type": "library",
+  "license": "proprietary",
+  "autoload": {
+    "psr-4": {
+      "Toppy\\AsyncViewModel\\": "src/"
     }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Toppy\\AsyncViewModel\\Tests\\": "tests/"
+    }
+  },
+  "require": {
+    "php": ">=8.4",
+    "amphp/amp": "^3.0",
+    "amphp/http-client": "^5.0",
+    "psr/container": "^2.0",
+    "psr/log": "^3.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^12.5",
+    "symfony/dependency-injection": "^8.0"
+  },
+  "suggest": {
+    "symfony/dependency-injection": "Required for ToppyAsyncViewModelBundle"
+  },
+  "extra": {
+    "symfony": {
+      "bundles": {
+        "Toppy\\AsyncViewModel\\Bundle\\ToppyAsyncViewModelBundle": [
+          "all"
+        ]
+      }
+    },
+    "branch-alias": {
+      "dev-main": "0.x-dev"
+    }
+  }
 }
