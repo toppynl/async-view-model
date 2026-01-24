@@ -86,7 +86,7 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
         }
 
         if (!isset($this->futures[$class])) {
-            $this->preload($class);
+            throw new Exception\ViewModelNotPreloadedException($class);
         }
 
         $future = $this->futures[$class];

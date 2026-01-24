@@ -11,7 +11,10 @@ use Toppy\AsyncViewModel\AsyncViewModel;
 use Toppy\AsyncViewModel\Context\ContextResolverInterface;
 use Toppy\AsyncViewModel\Context\RequestContext;
 use Toppy\AsyncViewModel\Context\ViewContext;
+use Toppy\AsyncViewModel\Exception\ViewModelNotPreloadedException;
 use Toppy\AsyncViewModel\Profiler\NullViewModelProfiler;
+use Toppy\AsyncViewModel\Tests\Fixtures\StubData;
+use Toppy\AsyncViewModel\Tests\Fixtures\StubViewModelWithData;
 use Toppy\AsyncViewModel\ViewModelManager;
 use Toppy\AsyncViewModel\WithDependencies;
 
@@ -174,5 +177,43 @@ final class ViewModelManagerTest extends TestCase
             RequestContext::create([], 'test')
         );
         return $resolver;
+    }
+
+    public function testGetThrowsWhenNotPreloaded(): void
+    {
+        $viewModel = $this->createRecordingViewModel('Test');
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $contextResolver = $this->createContextResolver();
+        $manager = new ViewModelManager($container, new NullViewModelProfiler(), $contextResolver);
+
+        // Do NOT preload - call get() directly
+
+        $this->expectException(ViewModelNotPreloadedException::class);
+        $this->expectExceptionMessage('Test');
+
+        $manager->get('Test');
+    }
+
+    public function testGetSucceedsWhenPreloaded(): void
+    {
+        $viewModel = new StubViewModelWithData();
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $contextResolver = $this->createContextResolver();
+        $manager = new ViewModelManager($container, new NullViewModelProfiler(), $contextResolver);
+
+        // Preload first
+        $manager->preload(StubViewModelWithData::class);
+
+        // Now get() should work
+        $result = $manager->get(StubViewModelWithData::class);
+        $this->assertInstanceOf(StubData::class, $result);
     }
 }
