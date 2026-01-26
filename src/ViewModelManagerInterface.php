@@ -42,4 +42,14 @@ interface ViewModelManagerInterface
      * @return Future<object>
      */
     public function preloadWithFuture(string $class): Future;
+
+    /**
+     * Get all pending futures and resolved view models.
+     *
+     * Returns a combined array of all ViewModels being tracked, whether still
+     * pending (as Futures) or already resolved (as data objects/lazy proxies).
+     *
+     * @return array<class-string, Future<object>|object>
+     */
+    public function all(): array;
 }

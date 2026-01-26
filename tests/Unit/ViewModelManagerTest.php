@@ -216,4 +216,92 @@ final class ViewModelManagerTest extends TestCase
         $result = $manager->get(StubViewModelWithData::class);
         $this->assertInstanceOf(StubData::class, $result);
     }
+
+    public function testAllReturnsEmptyArrayWhenNothingPreloaded(): void
+    {
+        $container = $this->createMock(ContainerInterface::class);
+        $contextResolver = $this->createContextResolver();
+        $manager = new ViewModelManager($container, new NullViewModelProfiler(), $contextResolver);
+
+        $this->assertSame([], $manager->all());
+    }
+
+    public function testAllReturnsFuturesForPreloadedViewModels(): void
+    {
+        $viewModel = new StubViewModelWithData();
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $contextResolver = $this->createContextResolver();
+        $manager = new ViewModelManager($container, new NullViewModelProfiler(), $contextResolver);
+
+        $manager->preload(StubViewModelWithData::class);
+
+        $all = $manager->all();
+
+        $this->assertCount(1, $all);
+        $this->assertArrayHasKey(StubViewModelWithData::class, $all);
+        $this->assertInstanceOf(Future::class, $all[StubViewModelWithData::class]);
+    }
+
+    public function testAllReturnsResolvedObjectsAfterGet(): void
+    {
+        $viewModel = new StubViewModelWithData();
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $contextResolver = $this->createContextResolver();
+        $manager = new ViewModelManager($container, new NullViewModelProfiler(), $contextResolver);
+
+        $manager->preload(StubViewModelWithData::class);
+        $manager->get(StubViewModelWithData::class);
+
+        $all = $manager->all();
+
+        $this->assertCount(1, $all);
+        $this->assertArrayHasKey(StubViewModelWithData::class, $all);
+        $this->assertInstanceOf(StubData::class, $all[StubViewModelWithData::class]);
+    }
+
+    public function testAllReturnsBothFuturesAndResolved(): void
+    {
+        $this->startOrder = [];
+
+        $viewModel1 = new StubViewModelWithData();
+        $viewModel2 = $this->createRecordingViewModel('ViewModel2');
+
+        $container = $this->createMock(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturnCallback(function ($class) use ($viewModel1, $viewModel2) {
+            return match ($class) {
+                StubViewModelWithData::class => $viewModel1,
+                'ViewModel2' => $viewModel2,
+                default => throw new \InvalidArgumentException("Unknown: $class"),
+            };
+        });
+
+        $contextResolver = $this->createContextResolver();
+        $manager = new ViewModelManager($container, new NullViewModelProfiler(), $contextResolver);
+
+        // Preload both
+        $manager->preload(StubViewModelWithData::class);
+        $manager->preload('ViewModel2');
+
+        // Resolve only one
+        $manager->get(StubViewModelWithData::class);
+
+        $all = $manager->all();
+
+        $this->assertCount(2, $all);
+
+        // ViewModel2 should still be a Future (not resolved)
+        $this->assertInstanceOf(Future::class, $all['ViewModel2']);
+
+        // StubViewModelWithData should be resolved (lazy proxy)
+        $this->assertInstanceOf(StubData::class, $all[StubViewModelWithData::class]);
+    }
 }

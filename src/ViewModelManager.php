@@ -121,6 +121,11 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
         return $this->futures[$class];
     }
 
+    public function all(): array
+    {
+        return [...$this->futures, ...$this->resolved];
+    }
+
     public function reset(): void
     {
         $this->futures = [];

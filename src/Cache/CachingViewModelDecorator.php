@@ -48,6 +48,11 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
         return $this->inner->preloadWithFuture($class);
     }
 
+    public function all(): array
+    {
+        return $this->inner->all();
+    }
+
     public function get(string $class): object
     {
         if (!$this->viewModels->has($class)) {
