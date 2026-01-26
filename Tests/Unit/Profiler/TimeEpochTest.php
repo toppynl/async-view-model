@@ -7,6 +7,7 @@ namespace Toppy\AsyncViewModel\Tests\Unit\Profiler;
 use PHPUnit\Framework\TestCase;
 use Toppy\AsyncViewModel\Profiler\TimeEpoch;
 
+/** Tests for TimeEpoch */
 final class TimeEpochTest extends TestCase
 {
     public function testGetElapsedReturnsMillisecondsSinceConstruction(): void
@@ -16,8 +17,8 @@ final class TimeEpochTest extends TestCase
 
         $elapsed = $epoch->getElapsed();
 
-        $this->assertGreaterThan(5.0, $elapsed);
-        $this->assertLessThan(50.0, $elapsed);
+        static::assertGreaterThan(5.0, $elapsed);
+        static::assertLessThan(50.0, $elapsed);
     }
 
     public function testResetClearsStartTime(): void
@@ -29,6 +30,6 @@ final class TimeEpochTest extends TestCase
         $epoch->reset();
 
         $afterReset = $epoch->getElapsed();
-        $this->assertLessThan($first, $afterReset);
+        static::assertLessThan($first, $afterReset);
     }
 }

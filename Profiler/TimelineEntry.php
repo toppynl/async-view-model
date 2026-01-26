@@ -39,6 +39,7 @@ final readonly class TimelineEntry
     public function getShortName(): string
     {
         $parts = explode('\\', $this->viewModelClass);
-        return end($parts);
+        $shortName = end($parts);
+        return $shortName !== false ? $shortName : $this->viewModelClass;
     }
 }

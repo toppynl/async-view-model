@@ -5,11 +5,12 @@ declare(strict_types=1);
 namespace Toppy\AsyncViewModel;
 
 use Amp\Future;
+use Psr\Container\ContainerInterface;
 use Toppy\AsyncViewModel\Context\ContextResolverInterface;
 use Toppy\AsyncViewModel\Exception\ViewModelResolutionException;
 use Toppy\AsyncViewModel\Profiler\ViewModelProfilerInterface;
-use Psr\Container\ContainerInterface;
 
+// @mago-ignore analysis:invalid-return-statement - PSR Container::get() returns mixed; cannot be narrowed without runtime assertions
 final class ViewModelManager implements ViewModelManagerInterface, ResetInterface
 {
     /** @var array<class-string, Future<object>> */
@@ -24,6 +25,12 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
         private readonly ContextResolverInterface $contextResolver,
     ) {}
 
+    /**
+     * @throws \InvalidArgumentException When the view model is not registered
+     * @throws \Psr\Container\ContainerExceptionInterface When container cannot fetch the service
+     * @throws \Psr\Container\NotFoundExceptionInterface When the service is not found in container
+     */
+    #[\Override]
     public function preload(string $class): void
     {
         if (isset($this->futures[$class]) || isset($this->resolved[$class])) {
@@ -40,9 +47,16 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
         $this->startFuture($class, $viewModel);
     }
 
+    /**
+     * @throws \InvalidArgumentException When a view model is not registered
+     * @throws \LogicException When circular dependencies are detected
+     * @throws \Psr\Container\ContainerExceptionInterface When container cannot fetch a service
+     * @throws \Psr\Container\NotFoundExceptionInterface When a service is not found in container
+     */
+    #[\Override]
     public function preloadAll(array $classes): void
     {
-        if (empty($classes)) {
+        if ($classes === []) {
             return;
         }
 
@@ -61,9 +75,7 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
             $viewModel = $this->viewModels->get($class);
             $instances[$class] = $viewModel;
 
-            $deps = $viewModel instanceof WithDependencies
-                ? $viewModel->getDependencies()
-                : [];
+            $deps = $viewModel instanceof WithDependencies ? array_values($viewModel->getDependencies()) : [];
 
             $graph->addNode($class, $deps);
         }
@@ -79,6 +91,13 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
         }
     }
 
+    /**
+     * @throws Exception\ViewModelNotPreloadedException When the view model was not preloaded
+     * @throws Exception\ViewModelResolutionException When the view model fails to resolve
+     * @throws \ReflectionException When reflection fails on the data class
+     * @throws \RuntimeException When the ViewModel PHPDoc is missing or invalid
+     */
+    #[\Override]
     public function get(string $class): object
     {
         if (isset($this->resolved[$class])) {
@@ -107,6 +126,12 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
         }
     }
 
+    /**
+     * @throws \InvalidArgumentException When the view model is not registered
+     * @throws \Psr\Container\ContainerExceptionInterface When container cannot fetch the service
+     * @throws \Psr\Container\NotFoundExceptionInterface When the service is not found in container
+     */
+    #[\Override]
     public function preloadWithFuture(string $class): Future
     {
         if (isset($this->resolved[$class])) {
@@ -121,11 +146,13 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
         return $this->futures[$class];
     }
 
+    #[\Override]
     public function all(): array
     {
         return [...$this->futures, ...$this->resolved];
     }
 
+    #[\Override]
     public function reset(): void
     {
         $this->futures = [];
@@ -137,13 +164,17 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
      *
      * @param array<class-string> $classes
      * @return array<class-string>
+     *
+     * @throws \InvalidArgumentException When a view model is not registered
+     * @throws \Psr\Container\ContainerExceptionInterface When container cannot fetch a service
+     * @throws \Psr\Container\NotFoundExceptionInterface When a service is not found in container
      */
     private function discoverAll(array $classes): array
     {
         $discovered = [];
         $queue = $classes;
 
-        while (!empty($queue)) {
+        while ($queue !== []) {
             $class = array_shift($queue);
 
             if (isset($discovered[$class])) {
@@ -180,9 +211,7 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
             return;
         }
 
-        $dependencies = $viewModel instanceof WithDependencies
-            ? $viewModel->getDependencies()
-            : [];
+        $dependencies = $viewModel instanceof WithDependencies ? $viewModel->getDependencies() : [];
 
         $viewContext = $this->contextResolver->getViewContext();
         $requestContext = $this->contextResolver->getRequestContext();
@@ -199,13 +228,15 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
      * @param class-string<T> $dataClass
      * @param Future<T> $future
      * @return T
+     *
+     * @throws \ReflectionException When reflection fails on the data class
      */
     private function createLazyProxy(string $dataClass, Future $future, string $viewModelClass): object
     {
         $profiler = $this->profiler;
         $reflector = new \ReflectionClass($dataClass);
 
-        return $reflector->newLazyProxy(function () use ($future, $viewModelClass, $profiler) {
+        return $reflector->newLazyProxy(static function () use ($future, $viewModelClass, $profiler): object {
             try {
                 $result = $future->await();
                 $profiler->finish($viewModelClass, $result);
@@ -228,6 +259,9 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
      *
      * @param class-string<AsyncViewModel> $viewModelClass
      * @return class-string
+     *
+     * @throws \ReflectionException When reflection fails on the ViewModel class
+     * @throws \RuntimeException When the ViewModel PHPDoc is missing or invalid
      */
     private function resolveDataClass(string $viewModelClass): string
     {
@@ -235,19 +269,22 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
         $docComment = $method->getDocComment();
 
         if ($docComment === false) {
-            throw new \RuntimeException(
-                sprintf('ViewModel "%s" must have PHPDoc @return Future<DataClass> on resolve()', $viewModelClass)
-            );
+            throw new \RuntimeException(sprintf(
+                'ViewModel "%s" must have PHPDoc @return Future<DataClass> on resolve()',
+                $viewModelClass,
+            ));
         }
 
         // Match @return Future<ClassName> or @return Future<Namespace\ClassName>
-        if (!preg_match('/@return\s+Future<([^>]+)>/', $docComment, $matches)) {
-            throw new \RuntimeException(
-                sprintf('ViewModel "%s" must have @return Future<DataClass> PHPDoc on resolve()', $viewModelClass)
-            );
+        $matches = [];
+        if (preg_match('/@return\s+Future<([^>]+)>/', $docComment, $matches) !== 1) {
+            throw new \RuntimeException(sprintf(
+                'ViewModel "%s" must have @return Future<DataClass> PHPDoc on resolve()',
+                $viewModelClass,
+            ));
         }
 
-        $dataClass = trim($matches[1]);
+        $dataClass = trim($matches[1] ?? '');
 
         // If already fully qualified
         if (class_exists($dataClass)) {
@@ -255,15 +292,17 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
         }
 
         // Try resolving relative to ViewModel's namespace
-        $namespace = (new \ReflectionClass($viewModelClass))->getNamespaceName();
+        $namespace = new \ReflectionClass($viewModelClass)->getNamespaceName();
         $fullyQualified = $namespace . '\\' . $dataClass;
 
         if (class_exists($fullyQualified)) {
             return $fullyQualified;
         }
 
-        throw new \RuntimeException(
-            sprintf('Cannot resolve data class "%s" for ViewModel "%s"', $dataClass, $viewModelClass)
-        );
+        throw new \RuntimeException(sprintf(
+            'Cannot resolve data class "%s" for ViewModel "%s"',
+            $dataClass,
+            $viewModelClass,
+        ));
     }
 }

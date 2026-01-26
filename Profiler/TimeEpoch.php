@@ -15,7 +15,7 @@ final class TimeEpoch implements ResetInterface
 
     public function __construct()
     {
-        $this->startTime = hrtime(true) / 1_000_000;
+        $this->startTime = (float) hrtime(true) / 1_000_000;
     }
 
     /**
@@ -23,11 +23,12 @@ final class TimeEpoch implements ResetInterface
      */
     public function getElapsed(): float
     {
-        return (hrtime(true) / 1_000_000) - $this->startTime;
+        return ((float) hrtime(true) / 1_000_000) - $this->startTime;
     }
 
+    #[\Override]
     public function reset(): void
     {
-        $this->startTime = hrtime(true) / 1_000_000;
+        $this->startTime = (float) hrtime(true) / 1_000_000;
     }
 }

@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace Toppy\AsyncViewModel;
 
 use Amp\Future;
-use Toppy\AsyncViewModel\Context\RequestContext;
-use Toppy\AsyncViewModel\Context\ViewContext;
 
 interface ViewModelManagerInterface
 {

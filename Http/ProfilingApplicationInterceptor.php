@@ -20,11 +20,13 @@ final class ProfilingApplicationInterceptor implements ApplicationInterceptor
         private readonly HttpClientProfilerInterface $profiler,
     ) {}
 
-    public function request(
-        Request $request,
-        Cancellation $cancellation,
-        DelegateHttpClient $httpClient,
-    ): Response {
+    /**
+     * @throws \Random\RandomException When random_bytes fails
+     * @throws \Throwable When the HTTP request fails
+     */
+    #[\Override]
+    public function request(Request $request, Cancellation $cancellation, DelegateHttpClient $httpClient): Response
+    {
         $requestId = bin2hex(random_bytes(8));
 
         // Extract headers for profiling
@@ -33,12 +35,7 @@ final class ProfilingApplicationInterceptor implements ApplicationInterceptor
             $headers[$name] = implode(', ', $values);
         }
 
-        $this->profiler->start(
-            $requestId,
-            $request->getMethod(),
-            (string) $request->getUri(),
-            $headers,
-        );
+        $this->profiler->start($requestId, $request->getMethod(), (string) $request->getUri(), $headers);
 
         try {
             $response = $httpClient->request($request, $cancellation);
@@ -52,12 +49,7 @@ final class ProfilingApplicationInterceptor implements ApplicationInterceptor
             // Get body size from Content-Length header if available
             $bodySize = (int) ($response->getHeader('Content-Length') ?? 0);
 
-            $this->profiler->finish(
-                $requestId,
-                $response->getStatus(),
-                $responseHeaders,
-                $bodySize,
-            );
+            $this->profiler->finish($requestId, $response->getStatus(), $responseHeaders, $bodySize);
 
             return $response;
         } catch (\Throwable $e) {

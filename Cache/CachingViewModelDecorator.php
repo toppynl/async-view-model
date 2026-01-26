@@ -20,6 +20,7 @@ use Toppy\AsyncViewModel\WithDependencies;
  * Only caches ViewModels implementing CacheableViewModel.
  * Non-cacheable ViewModels pass through unchanged.
  */
+// @mago-ignore analysis:invalid-return-statement,mixed-return-statement - PSR Container::get() returns mixed; vendor limitation
 final class CachingViewModelDecorator implements ViewModelManagerInterface
 {
     public function __construct(
@@ -33,32 +34,43 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
         private readonly ?RevalidationLockInterface $revalidationLock = null,
     ) {}
 
+    #[\Override]
     public function preload(string $class): void
     {
         $this->inner->preload($class);
     }
 
+    #[\Override]
     public function preloadAll(array $classes): void
     {
         $this->inner->preloadAll($classes);
     }
 
+    #[\Override]
     public function preloadWithFuture(string $class): Future
     {
         return $this->inner->preloadWithFuture($class);
     }
 
+    #[\Override]
     public function all(): array
     {
         return $this->inner->all();
     }
 
+    /**
+     * @throws \Psr\Container\ContainerExceptionInterface When container cannot fetch the service
+     * @throws \Psr\Container\NotFoundExceptionInterface When the service is not found in container
+     * @throws \Throwable When the view model resolution fails and no stale entry is available
+     */
+    #[\Override]
     public function get(string $class): object
     {
         if (!$this->viewModels->has($class)) {
             return $this->inner->get($class);
         }
 
+        /** @var CacheableViewModel|mixed $viewModel */
         $viewModel = $this->viewModels->get($class);
 
         if (!$viewModel instanceof CacheableViewModel) {
@@ -118,9 +130,7 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
         $requestContext = $this->contextResolver->getRequestContext();
         $class = $viewModel::class;
 
-        $dependencies = $viewModel instanceof WithDependencies
-            ? $viewModel->getDependencies()
-            : [];
+        $dependencies = $viewModel instanceof WithDependencies ? $viewModel->getDependencies() : [];
 
         $this->profiler->start($class, $viewContext, $requestContext, $dependencies);
 
@@ -148,18 +158,16 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
         }
     }
 
-    private function fetchAndStore(
-        CacheableViewModel $viewModel,
-        string $key,
-        ?CacheEntry $existingEntry,
-    ): object {
+    /**
+     * @throws \Throwable When the view model resolution fails and no stale entry is available
+     */
+    private function fetchAndStore(CacheableViewModel $viewModel, string $key, ?CacheEntry $existingEntry): object
+    {
         $viewContext = $this->contextResolver->getViewContext();
         $requestContext = $this->contextResolver->getRequestContext();
         $class = $viewModel::class;
 
-        $dependencies = $viewModel instanceof WithDependencies
-            ? $viewModel->getDependencies()
-            : [];
+        $dependencies = $viewModel instanceof WithDependencies ? $viewModel->getDependencies() : [];
 
         $this->profiler->start($class, $viewContext, $requestContext, $dependencies);
 

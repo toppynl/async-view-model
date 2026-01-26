@@ -11,12 +11,15 @@ use Toppy\AsyncViewModel\Context\ViewContext;
 
 /**
  * Stub ViewModel with proper PHPDoc for testing ViewModelManager::get().
+ *
+ * @implements AsyncViewModel<StubData>
  */
 final class StubViewModelWithData implements AsyncViewModel
 {
     /**
      * @return Future<StubData>
      */
+    #[\Override]
     public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
     {
         return Future::complete(new StubData());

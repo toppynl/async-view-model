@@ -12,11 +12,16 @@ use Toppy\AsyncViewModel\Context\ViewContext;
 /**
  * Stub ViewModel for testing compile-time discovery.
  * Named variants allow testing multiple ViewModels in same template.
+ *
+ * @implements AsyncViewModel<\stdClass>
  */
 final class StubViewModel implements AsyncViewModel
 {
+    #[\Override]
     public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
     {
-        return Future::complete(['stub' => true]);
+        $data = new \stdClass();
+        $data->stub = true;
+        return Future::complete($data);
     }
 }

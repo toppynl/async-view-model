@@ -7,7 +7,6 @@ namespace Toppy\AsyncViewModel\Tests\Unit\Cache;
 use Amp\Future;
 use PHPUnit\Framework\TestCase;
 use Psr\Container\ContainerInterface;
-use Psr\Log\NullLogger;
 use Toppy\AsyncViewModel\AsyncViewModel;
 use Toppy\AsyncViewModel\Cache\CacheableViewModel;
 use Toppy\AsyncViewModel\Cache\CacheEntry;
@@ -20,11 +19,16 @@ use Toppy\AsyncViewModel\Profiler\TimeEpoch;
 use Toppy\AsyncViewModel\Profiler\ViewModelProfilerInterface;
 use Toppy\AsyncViewModel\ViewModelManagerInterface;
 
+/**
+ * @mago-expect analysis:possibly-invalid-argument
+ * @mago-expect analysis:mixed-operand
+ */
 final class CachingViewModelDecoratorTest extends TestCase
 {
     private ViewContext $viewContext;
     private RequestContext $requestContext;
 
+    #[\Override]
     protected function setUp(): void
     {
         $this->viewContext = ViewContext::create('EUR', 'en', false, false, null);
@@ -37,14 +41,11 @@ final class CachingViewModelDecoratorTest extends TestCase
         $expectedResult->name = 'test';
 
         $inner = $this->createMock(ViewModelManagerInterface::class);
-        $inner->expects($this->once())
-            ->method('get')
-            ->with('NonCacheable')
-            ->willReturn($expectedResult);
+        $inner->expects($this->once())->method('get')->with('NonCacheable')->willReturn($expectedResult);
 
-        $viewModel = $this->createMock(AsyncViewModel::class);
+        $viewModel = $this->createStub(AsyncViewModel::class);
 
-        $container = $this->createMock(ContainerInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
         $container->method('has')->willReturn(true);
         $container->method('get')->willReturn($viewModel);
 
@@ -62,7 +63,7 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $result = $decorator->get('NonCacheable');
 
-        $this->assertSame($expectedResult, $result);
+        static::assertSame($expectedResult, $result);
     }
 
     public function testViewModelNotInContainerPassesThrough(): void
@@ -71,12 +72,9 @@ final class CachingViewModelDecoratorTest extends TestCase
         $expectedResult->name = 'passthrough';
 
         $inner = $this->createMock(ViewModelManagerInterface::class);
-        $inner->expects($this->once())
-            ->method('get')
-            ->with('UnknownViewModel')
-            ->willReturn($expectedResult);
+        $inner->expects($this->once())->method('get')->with('UnknownViewModel')->willReturn($expectedResult);
 
-        $container = $this->createMock(ContainerInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
         $container->method('has')->willReturn(false);
 
         $cache = $this->createMock(SwrCacheInterface::class);
@@ -93,7 +91,7 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $result = $decorator->get('UnknownViewModel');
 
-        $this->assertSame($expectedResult, $result);
+        static::assertSame($expectedResult, $result);
     }
 
     public function testFreshCacheHitReturnsWithoutResolution(): void
@@ -105,11 +103,11 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $viewModel = $this->createCacheableViewModel();
 
-        $container = $this->createMock(ContainerInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
         $container->method('has')->willReturn(true);
         $container->method('get')->willReturn($viewModel);
 
-        $cache = $this->createMock(SwrCacheInterface::class);
+        $cache = $this->createStub(SwrCacheInterface::class);
         $cache->method('get')->willReturn($entry);
 
         $inner = $this->createMock(ViewModelManagerInterface::class);
@@ -126,7 +124,7 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $result = $decorator->get('CacheableViewModel');
 
-        $this->assertSame($cachedValue, $result);
+        static::assertSame($cachedValue, $result);
     }
 
     public function testCacheMissResolvesAndStores(): void
@@ -136,21 +134,22 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $viewModel = $this->createCacheableViewModel($freshValue);
 
-        $container = $this->createMock(ContainerInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
         $container->method('has')->willReturn(true);
         $container->method('get')->willReturn($viewModel);
 
         $cache = $this->createMock(SwrCacheInterface::class);
         $cache->method('get')->willReturn(null);
-        $cache->expects($this->once())
+        $cache
+            ->expects($this->once())
             ->method('set')
             ->with(
                 'test_key',
-                $this->callback(fn($e) => $e instanceof CacheEntry && $e->value === $freshValue),
+                static::callback(static fn($e) => $e instanceof CacheEntry && $e->value === $freshValue),
                 ['tag1'],
             );
 
-        $inner = $this->createMock(ViewModelManagerInterface::class);
+        $inner = $this->createStub(ViewModelManagerInterface::class);
 
         $decorator = new CachingViewModelDecorator(
             $inner,
@@ -163,7 +162,7 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $result = $decorator->get('CacheableViewModel');
 
-        $this->assertSame($freshValue, $result);
+        static::assertSame($freshValue, $result);
     }
 
     public function testStaleRevalidatableReturnsStaleAndTriggersBackgroundRevalidation(): void
@@ -176,7 +175,7 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $viewModel = $this->createCacheableViewModel();
 
-        $container = $this->createMock(ContainerInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
         $container->method('has')->willReturn(true);
         $container->method('get')->willReturn($viewModel);
 
@@ -185,7 +184,7 @@ final class CachingViewModelDecoratorTest extends TestCase
         // Background revalidation should store new value
         $cache->expects($this->once())->method('set');
 
-        $inner = $this->createMock(ViewModelManagerInterface::class);
+        $inner = $this->createStub(ViewModelManagerInterface::class);
 
         $decorator = new CachingViewModelDecorator(
             $inner,
@@ -199,7 +198,7 @@ final class CachingViewModelDecoratorTest extends TestCase
         $result = $decorator->get('CacheableViewModel');
 
         // Should return stale value immediately
-        $this->assertSame($staleValue, $result);
+        static::assertSame($staleValue, $result);
 
         // Wait a bit for async revalidation to complete
         \Amp\delay(0.1);
@@ -215,14 +214,14 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $viewModel = $this->createFailingCacheableViewModel();
 
-        $container = $this->createMock(ContainerInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
         $container->method('has')->willReturn(true);
         $container->method('get')->willReturn($viewModel);
 
-        $cache = $this->createMock(SwrCacheInterface::class);
+        $cache = $this->createStub(SwrCacheInterface::class);
         $cache->method('get')->willReturn($entry);
 
-        $inner = $this->createMock(ViewModelManagerInterface::class);
+        $inner = $this->createStub(ViewModelManagerInterface::class);
 
         $decorator = new CachingViewModelDecorator(
             $inner,
@@ -235,7 +234,7 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $result = $decorator->get('CacheableViewModel');
 
-        $this->assertSame($staleValue, $result);
+        static::assertSame($staleValue, $result);
     }
 
     public function testExpiredEntryThrowsOnFailure(): void
@@ -245,14 +244,14 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $viewModel = $this->createFailingCacheableViewModel();
 
-        $container = $this->createMock(ContainerInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
         $container->method('has')->willReturn(true);
         $container->method('get')->willReturn($viewModel);
 
-        $cache = $this->createMock(SwrCacheInterface::class);
+        $cache = $this->createStub(SwrCacheInterface::class);
         $cache->method('get')->willReturn($entry);
 
-        $inner = $this->createMock(ViewModelManagerInterface::class);
+        $inner = $this->createStub(ViewModelManagerInterface::class);
 
         $decorator = new CachingViewModelDecorator(
             $inner,
@@ -263,8 +262,8 @@ final class CachingViewModelDecoratorTest extends TestCase
             new TimeEpoch(),
         );
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Simulated failure');
+        static::expectException(\RuntimeException::class);
+        static::expectExceptionMessage('Simulated failure');
 
         $decorator->get('CacheableViewModel');
     }
@@ -273,14 +272,14 @@ final class CachingViewModelDecoratorTest extends TestCase
     {
         $viewModel = $this->createFailingCacheableViewModel();
 
-        $container = $this->createMock(ContainerInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
         $container->method('has')->willReturn(true);
         $container->method('get')->willReturn($viewModel);
 
-        $cache = $this->createMock(SwrCacheInterface::class);
+        $cache = $this->createStub(SwrCacheInterface::class);
         $cache->method('get')->willReturn(null);
 
-        $inner = $this->createMock(ViewModelManagerInterface::class);
+        $inner = $this->createStub(ViewModelManagerInterface::class);
 
         $decorator = new CachingViewModelDecorator(
             $inner,
@@ -291,8 +290,8 @@ final class CachingViewModelDecoratorTest extends TestCase
             new TimeEpoch(),
         );
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Simulated failure');
+        static::expectException(\RuntimeException::class);
+        static::expectExceptionMessage('Simulated failure');
 
         $decorator->get('CacheableViewModel');
     }
@@ -302,8 +301,8 @@ final class CachingViewModelDecoratorTest extends TestCase
         $inner = $this->createMock(ViewModelManagerInterface::class);
         $inner->expects($this->once())->method('preload')->with('SomeClass');
 
-        $container = $this->createMock(ContainerInterface::class);
-        $cache = $this->createMock(SwrCacheInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
+        $cache = $this->createStub(SwrCacheInterface::class);
 
         $decorator = new CachingViewModelDecorator(
             $inner,
@@ -324,8 +323,8 @@ final class CachingViewModelDecoratorTest extends TestCase
         $inner = $this->createMock(ViewModelManagerInterface::class);
         $inner->expects($this->once())->method('preloadAll')->with($classes);
 
-        $container = $this->createMock(ContainerInterface::class);
-        $cache = $this->createMock(SwrCacheInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
+        $cache = $this->createStub(SwrCacheInterface::class);
 
         $decorator = new CachingViewModelDecorator(
             $inner,
@@ -344,13 +343,10 @@ final class CachingViewModelDecoratorTest extends TestCase
         $expectedFuture = Future::complete(new \stdClass());
 
         $inner = $this->createMock(ViewModelManagerInterface::class);
-        $inner->expects($this->once())
-            ->method('preloadWithFuture')
-            ->with('SomeClass')
-            ->willReturn($expectedFuture);
+        $inner->expects($this->once())->method('preloadWithFuture')->with('SomeClass')->willReturn($expectedFuture);
 
-        $container = $this->createMock(ContainerInterface::class);
-        $cache = $this->createMock(SwrCacheInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
+        $cache = $this->createStub(SwrCacheInterface::class);
 
         $decorator = new CachingViewModelDecorator(
             $inner,
@@ -363,7 +359,7 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $result = $decorator->preloadWithFuture('SomeClass');
 
-        $this->assertSame($expectedFuture, $result);
+        static::assertSame($expectedFuture, $result);
     }
 
     public function testCacheEntryMetadataIsStoredCorrectly(): void
@@ -377,25 +373,26 @@ final class CachingViewModelDecoratorTest extends TestCase
             staleIfError: 7200,
         );
 
-        $container = $this->createMock(ContainerInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
         $container->method('has')->willReturn(true);
         $container->method('get')->willReturn($viewModel);
 
         $storedEntry = null;
         $cache = $this->createMock(SwrCacheInterface::class);
         $cache->method('get')->willReturn(null);
-        $cache->expects($this->once())
+        $cache
+            ->expects($this->once())
             ->method('set')
             ->with(
-                $this->anything(),
-                $this->callback(function ($entry) use (&$storedEntry) {
+                static::anything(),
+                static::callback(static function (CacheEntry $entry) use (&$storedEntry): bool {
                     $storedEntry = $entry;
                     return $entry instanceof CacheEntry;
                 }),
-                $this->anything(),
+                static::anything(),
             );
 
-        $inner = $this->createMock(ViewModelManagerInterface::class);
+        $inner = $this->createStub(ViewModelManagerInterface::class);
 
         $decorator = new CachingViewModelDecorator(
             $inner,
@@ -408,11 +405,11 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         $decorator->get('CacheableViewModel');
 
-        $this->assertInstanceOf(CacheEntry::class, $storedEntry);
-        $this->assertSame($freshValue, $storedEntry->value);
-        $this->assertSame(600, $storedEntry->maxAge);
-        $this->assertSame(1800, $storedEntry->staleWhileRevalidate);
-        $this->assertSame(7200, $storedEntry->staleIfError);
+        static::assertInstanceOf(CacheEntry::class, $storedEntry);
+        static::assertSame($freshValue, $storedEntry->value);
+        static::assertSame(600, $storedEntry->maxAge);
+        static::assertSame(1800, $storedEntry->staleWhileRevalidate);
+        static::assertSame(7200, $storedEntry->staleIfError);
     }
 
     public function testCustomCacheKeyIsUsed(): void
@@ -420,43 +417,59 @@ final class CachingViewModelDecoratorTest extends TestCase
         $freshValue = new \stdClass();
 
         $viewModel = new class($freshValue) implements CacheableViewModel {
-            public function __construct(private readonly object $value) {}
+            public function __construct(
+                private readonly object $value,
+            ) {}
 
+            #[\Override]
             public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
             {
                 return Future::complete($this->value);
             }
 
+            #[\Override]
             public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
             {
                 return 'custom_key_' . $requestContext->get('id') . '_' . $viewContext->getCurrency();
             }
 
+            #[\Override]
             public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
             {
                 return ['tag1'];
             }
 
-            public function getMaxAge(): int { return 300; }
-            public function getStaleWhileRevalidate(): int { return 3600; }
-            public function getStaleIfError(): int { return 86400; }
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 3600;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 86400;
+            }
         };
 
-        $container = $this->createMock(ContainerInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
         $container->method('has')->willReturn(true);
         $container->method('get')->willReturn($viewModel);
 
         $cache = $this->createMock(SwrCacheInterface::class);
         $cache->method('get')->willReturn(null);
-        $cache->expects($this->once())
+        $cache
+            ->expects($this->once())
             ->method('set')
-            ->with(
-                'custom_key_123_EUR',
-                $this->anything(),
-                $this->anything(),
-            );
+            ->with('custom_key_123_EUR', static::anything(), static::anything());
 
-        $inner = $this->createMock(ViewModelManagerInterface::class);
+        $inner = $this->createStub(ViewModelManagerInterface::class);
 
         $decorator = new CachingViewModelDecorator(
             $inner,
@@ -475,43 +488,59 @@ final class CachingViewModelDecoratorTest extends TestCase
         $freshValue = new \stdClass();
 
         $viewModel = new class($freshValue) implements CacheableViewModel {
-            public function __construct(private readonly object $value) {}
+            public function __construct(
+                private readonly object $value,
+            ) {}
 
+            #[\Override]
             public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
             {
                 return Future::complete($this->value);
             }
 
+            #[\Override]
             public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
             {
                 return 'test_key';
             }
 
+            #[\Override]
             public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
             {
                 return ['product_123', 'stock', 'warehouse_eu'];
             }
 
-            public function getMaxAge(): int { return 300; }
-            public function getStaleWhileRevalidate(): int { return 3600; }
-            public function getStaleIfError(): int { return 86400; }
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 3600;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 86400;
+            }
         };
 
-        $container = $this->createMock(ContainerInterface::class);
+        $container = $this->createStub(ContainerInterface::class);
         $container->method('has')->willReturn(true);
         $container->method('get')->willReturn($viewModel);
 
         $cache = $this->createMock(SwrCacheInterface::class);
         $cache->method('get')->willReturn(null);
-        $cache->expects($this->once())
+        $cache
+            ->expects($this->once())
             ->method('set')
-            ->with(
-                $this->anything(),
-                $this->anything(),
-                ['product_123', 'stock', 'warehouse_eu'],
-            );
+            ->with(static::anything(), static::anything(), ['product_123', 'stock', 'warehouse_eu']);
 
-        $inner = $this->createMock(ViewModelManagerInterface::class);
+        $inner = $this->createStub(ViewModelManagerInterface::class);
 
         $decorator = new CachingViewModelDecorator(
             $inner,
@@ -527,7 +556,7 @@ final class CachingViewModelDecoratorTest extends TestCase
 
     private function createContextResolver(): ContextResolverInterface
     {
-        $resolver = $this->createMock(ContextResolverInterface::class);
+        $resolver = $this->createStub(ContextResolverInterface::class);
         $resolver->method('getViewContext')->willReturn($this->viewContext);
         $resolver->method('getRequestContext')->willReturn($this->requestContext);
         return $resolver;
@@ -535,7 +564,7 @@ final class CachingViewModelDecoratorTest extends TestCase
 
     private function createProfiler(): ViewModelProfilerInterface
     {
-        return $this->createMock(ViewModelProfilerInterface::class);
+        return $this->createStub(ViewModelProfilerInterface::class);
     }
 
     private function createCacheableViewModel(?object $returnValue = null): CacheableViewModel
@@ -543,26 +572,45 @@ final class CachingViewModelDecoratorTest extends TestCase
         $value = $returnValue ?? new \stdClass();
 
         return new class($value) implements CacheableViewModel {
-            public function __construct(private readonly object $value) {}
+            public function __construct(
+                private readonly object $value,
+            ) {}
 
+            #[\Override]
             public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
             {
                 return Future::complete($this->value);
             }
 
+            #[\Override]
             public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
             {
                 return 'test_key';
             }
 
+            #[\Override]
             public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
             {
                 return ['tag1'];
             }
 
-            public function getMaxAge(): int { return 300; }
-            public function getStaleWhileRevalidate(): int { return 3600; }
-            public function getStaleIfError(): int { return 86400; }
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 3600;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 86400;
+            }
         };
     }
 
@@ -580,48 +628,85 @@ final class CachingViewModelDecoratorTest extends TestCase
                 private readonly int $staleIfError,
             ) {}
 
+            #[\Override]
             public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
             {
                 return Future::complete($this->value);
             }
 
+            #[\Override]
             public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
             {
                 return 'test_key';
             }
 
+            #[\Override]
             public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
             {
                 return ['tag1'];
             }
 
-            public function getMaxAge(): int { return $this->maxAge; }
-            public function getStaleWhileRevalidate(): int { return $this->swr; }
-            public function getStaleIfError(): int { return $this->staleIfError; }
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return $this->maxAge;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return $this->swr;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return $this->staleIfError;
+            }
         };
     }
 
     private function createFailingCacheableViewModel(): CacheableViewModel
     {
         return new class implements CacheableViewModel {
+            /**
+             * @throws \RuntimeException
+             */
+            #[\Override]
             public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
             {
                 throw new \RuntimeException('Simulated failure');
             }
 
+            #[\Override]
             public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
             {
                 return 'test_key';
             }
 
+            #[\Override]
             public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
             {
                 return ['tag1'];
             }
 
-            public function getMaxAge(): int { return 300; }
-            public function getStaleWhileRevalidate(): int { return 0; }
-            public function getStaleIfError(): int { return 86400; }
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 0;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 86400;
+            }
         };
     }
 }

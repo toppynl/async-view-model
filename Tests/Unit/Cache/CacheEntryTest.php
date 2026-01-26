@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Toppy\AsyncViewModel\Cache\CacheEntry;
 
+/** Tests for CacheEntry */
 final class CacheEntryTest extends TestCase
 {
     public function testAgeCalculation(): void
@@ -15,9 +16,9 @@ final class CacheEntryTest extends TestCase
         $createdAt = 1000;
         $entry = new CacheEntry('value', $createdAt, 300, 3600, 86400);
 
-        $this->assertSame(0, $entry->age(1000));
-        $this->assertSame(100, $entry->age(1100));
-        $this->assertSame(500, $entry->age(1500));
+        static::assertSame(0, $entry->age(1000));
+        static::assertSame(100, $entry->age(1100));
+        static::assertSame(500, $entry->age(1500));
     }
 
     #[DataProvider('freshnessProvider')]
@@ -27,7 +28,7 @@ final class CacheEntryTest extends TestCase
         $maxAge = 300;
         $entry = new CacheEntry('value', $createdAt, $maxAge, 3600, 86400);
 
-        $this->assertSame($expected, $entry->isFresh($createdAt + $age));
+        static::assertSame($expected, $entry->isFresh($createdAt + $age));
     }
 
     public static function freshnessProvider(): array
@@ -47,7 +48,7 @@ final class CacheEntryTest extends TestCase
         $createdAt = 1000;
         $entry = new CacheEntry('value', $createdAt, 300, 3600, 86400);
 
-        $this->assertSame($expected, $entry->isStaleRevalidatable($createdAt + $age));
+        static::assertSame($expected, $entry->isStaleRevalidatable($createdAt + $age));
     }
 
     public static function staleRevalidatableProvider(): array
@@ -67,7 +68,7 @@ final class CacheEntryTest extends TestCase
         $createdAt = 1000;
         $entry = new CacheEntry('value', $createdAt, 300, 3600, 86400);
 
-        $this->assertSame($expected, $entry->isStaleServableOnError($createdAt + $age));
+        static::assertSame($expected, $entry->isStaleServableOnError($createdAt + $age));
     }
 
     public static function staleServableOnErrorProvider(): array
@@ -85,15 +86,15 @@ final class CacheEntryTest extends TestCase
     {
         // staleWhileRevalidate > staleIfError
         $entry1 = new CacheEntry('value', 1000, 300, 3600, 1800);
-        $this->assertSame(3900, $entry1->getTotalTtl());
+        static::assertSame(3900, $entry1->getTotalTtl());
 
         // staleIfError > staleWhileRevalidate
         $entry2 = new CacheEntry('value', 1000, 300, 3600, 86400);
-        $this->assertSame(86700, $entry2->getTotalTtl());
+        static::assertSame(86700, $entry2->getTotalTtl());
 
         // Equal
         $entry3 = new CacheEntry('value', 1000, 300, 3600, 3600);
-        $this->assertSame(3900, $entry3->getTotalTtl());
+        static::assertSame(3900, $entry3->getTotalTtl());
     }
 
     public function testValueIsPreserved(): void
@@ -103,8 +104,8 @@ final class CacheEntryTest extends TestCase
 
         $entry = new CacheEntry($dto, time(), 300, 3600, 86400);
 
-        $this->assertSame($dto, $entry->value);
-        $this->assertSame('test', $entry->value->name);
+        static::assertSame($dto, $entry->value);
+        static::assertSame('test', $entry->value->name);
     }
 
     public function testDisabledSwrWindow(): void
@@ -113,13 +114,13 @@ final class CacheEntryTest extends TestCase
         $entry = new CacheEntry('value', $createdAt, 300, 0, 0);
 
         // Fresh
-        $this->assertTrue($entry->isFresh($createdAt + 300));
-        $this->assertTrue($entry->isStaleRevalidatable($createdAt + 300));
-        $this->assertTrue($entry->isStaleServableOnError($createdAt + 300));
+        static::assertTrue($entry->isFresh($createdAt + 300));
+        static::assertTrue($entry->isStaleRevalidatable($createdAt + 300));
+        static::assertTrue($entry->isStaleServableOnError($createdAt + 300));
 
         // Past maxAge - all false since swr=0 and error=0
-        $this->assertFalse($entry->isFresh($createdAt + 301));
-        $this->assertFalse($entry->isStaleRevalidatable($createdAt + 301));
-        $this->assertFalse($entry->isStaleServableOnError($createdAt + 301));
+        static::assertFalse($entry->isFresh($createdAt + 301));
+        static::assertFalse($entry->isStaleRevalidatable($createdAt + 301));
+        static::assertFalse($entry->isStaleServableOnError($createdAt + 301));
     }
 }

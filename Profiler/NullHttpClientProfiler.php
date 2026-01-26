@@ -9,44 +9,43 @@ namespace Toppy\AsyncViewModel\Profiler;
  */
 final class NullHttpClientProfiler implements HttpClientProfilerInterface
 {
-    public function start(
-        string $requestId,
-        string $method,
-        string $url,
-        array $headers = [],
-    ): void {
+    #[\Override]
+    public function start(string $requestId, string $method, string $url, array $headers = []): void
+    {
         // No-op
     }
 
-    public function finish(
-        string $requestId,
-        int $statusCode,
-        array $responseHeaders,
-        int $bodySize,
-    ): void {
+    #[\Override]
+    public function finish(string $requestId, int $statusCode, array $responseHeaders, int $bodySize): void
+    {
         // No-op
     }
 
+    #[\Override]
     public function fail(string $requestId, \Throwable $exception): void
     {
         // No-op
     }
 
+    #[\Override]
     public function getEntries(): array
     {
         return [];
     }
 
+    #[\Override]
     public function getTotalTime(): float
     {
         return 0.0;
     }
 
+    #[\Override]
     public function getCount(): int
     {
         return 0;
     }
 
+    #[\Override]
     public function getErrorCount(): int
     {
         return 0;

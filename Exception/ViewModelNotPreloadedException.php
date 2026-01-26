@@ -16,7 +16,7 @@ final class ViewModelNotPreloadedException extends \LogicException
     ) {
         parent::__construct(sprintf(
             'ViewModel "%s" was not preloaded. Call preload() or preloadAll() before get().',
-            $viewModelClass
+            $viewModelClass,
         ));
     }
 }

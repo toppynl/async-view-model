@@ -14,24 +14,14 @@ interface HttpClientProfilerInterface
      *
      * @param array<string, string> $headers Request headers
      */
-    public function start(
-        string $requestId,
-        string $method,
-        string $url,
-        array $headers = [],
-    ): void;
+    public function start(string $requestId, string $method, string $url, array $headers = []): void;
 
     /**
      * Mark successful completion of an HTTP request.
      *
      * @param array<string, string> $responseHeaders
      */
-    public function finish(
-        string $requestId,
-        int $statusCode,
-        array $responseHeaders,
-        int $bodySize,
-    ): void;
+    public function finish(string $requestId, int $statusCode, array $responseHeaders, int $bodySize): void;
 
     /**
      * Mark failed HTTP request.

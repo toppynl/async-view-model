@@ -7,6 +7,8 @@ namespace Toppy\AsyncViewModel\Context;
 /**
  * Immutable snapshot of route parameters.
  * Serializable for encrypted URL transport.
+ *
+ * @consistent-constructor
  */
 readonly class RequestContext
 {
@@ -27,9 +29,8 @@ readonly class RequestContext
      */
     public static function fromArray(array $data): static
     {
-        /** @var array<string, mixed> $params */
         $params = $data['params'] ?? [];
-        $requestId = (string) ($data['requestId'] ?? '');
+        $requestId = $data['requestId'] ?? '';
         $type = $data['_type'] ?? null;
 
         // If no type or type matches current class, create directly
@@ -38,12 +39,8 @@ readonly class RequestContext
         }
 
         // Validate and delegate to subclass
-        if (
-            class_exists($type)
-            && is_subclass_of($type, self::class)
-            && method_exists($type, 'fromArray')
-        ) {
-            /** @var static */
+        if (class_exists($type) && is_subclass_of($type, self::class) && method_exists($type, 'fromArray')) {
+            /** @var class-string<static> $type */
             return $type::fromArray($data);
         }
 

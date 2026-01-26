@@ -7,13 +7,14 @@ namespace Toppy\AsyncViewModel\Tests\Unit;
 use PHPUnit\Framework\TestCase;
 use Toppy\AsyncViewModel\DependencyGraph;
 
+/** Tests for DependencyGraph */
 final class DependencyGraphTest extends TestCase
 {
     public function testEmptyGraphReturnsEmptyOrder(): void
     {
         $graph = new DependencyGraph();
 
-        $this->assertSame([], $graph->getStartOrder());
+        static::assertSame([], $graph->getStartOrder());
     }
 
     public function testSingleNodeWithNoDependencies(): void
@@ -21,7 +22,7 @@ final class DependencyGraphTest extends TestCase
         $graph = new DependencyGraph();
         $graph->addNode('A', []);
 
-        $this->assertSame(['A'], $graph->getStartOrder());
+        static::assertSame(['A'], $graph->getStartOrder());
     }
 
     public function testNodeWithDependentsStartsFirst(): void
@@ -33,8 +34,8 @@ final class DependencyGraphTest extends TestCase
         $order = $graph->getStartOrder();
 
         // Dependency has a dependent, so starts first
-        $this->assertSame('Dependency', $order[0]);
-        $this->assertSame('Dependent', $order[1]);
+        static::assertSame('Dependency', $order[0]);
+        static::assertSame('Dependent', $order[1]);
     }
 
     public function testMultipleDependentsIncreasePriority(): void
@@ -48,7 +49,7 @@ final class DependencyGraphTest extends TestCase
         $order = $graph->getStartOrder();
 
         // Shared has 3 dependents, should be first
-        $this->assertSame('Shared', $order[0]);
+        static::assertSame('Shared', $order[0]);
     }
 
     public function testTransitiveDependencies(): void
@@ -61,9 +62,9 @@ final class DependencyGraphTest extends TestCase
         $order = $graph->getStartOrder();
 
         // A has most transitive dependents (B and C)
-        $this->assertSame('A', $order[0]);
-        $this->assertSame('B', $order[1]);
-        $this->assertSame('C', $order[2]);
+        static::assertSame('A', $order[0]);
+        static::assertSame('B', $order[1]);
+        static::assertSame('C', $order[2]);
     }
 
     public function testDetectsCycle(): void
@@ -72,8 +73,8 @@ final class DependencyGraphTest extends TestCase
         $graph->addNode('A', ['B']);
         $graph->addNode('B', ['A']);
 
-        $this->expectException(\LogicException::class);
-        $this->expectExceptionMessageMatches('/[Cc]ircular/');
+        static::expectException(\LogicException::class);
+        static::expectExceptionMessageMatches('/[Cc]ircular/');
         $graph->detectCycle();
     }
 
@@ -84,7 +85,7 @@ final class DependencyGraphTest extends TestCase
         $graph->addNode('B', ['C']);
         $graph->addNode('C', ['A']);
 
-        $this->expectException(\LogicException::class);
+        static::expectException(\LogicException::class);
         $graph->detectCycle();
     }
 
@@ -97,7 +98,7 @@ final class DependencyGraphTest extends TestCase
 
         $graph->detectCycle(); // Should not throw
 
-        $this->assertTrue(true);
+        static::assertTrue(true);
     }
 
     public function testAddNodeWithUnknownDependencyAutoAdds(): void
@@ -108,7 +109,7 @@ final class DependencyGraphTest extends TestCase
         // Unknown should be auto-added with no deps
         $order = $graph->getStartOrder();
 
-        $this->assertCount(2, $order);
-        $this->assertContains('Unknown', $order);
+        static::assertCount(2, $order);
+        static::assertContains('Unknown', $order);
     }
 }

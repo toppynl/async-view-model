@@ -41,7 +41,7 @@ final readonly class CacheEntry
      */
     public function isStaleRevalidatable(?int $now = null): bool
     {
-        return $this->age($now) <= $this->maxAge + $this->staleWhileRevalidate;
+        return $this->age($now) <= ($this->maxAge + $this->staleWhileRevalidate);
     }
 
     /**
@@ -49,7 +49,7 @@ final readonly class CacheEntry
      */
     public function isStaleServableOnError(?int $now = null): bool
     {
-        return $this->age($now) <= $this->maxAge + $this->staleIfError;
+        return $this->age($now) <= ($this->maxAge + $this->staleIfError);
     }
 
     /**

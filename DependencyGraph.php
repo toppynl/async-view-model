@@ -55,7 +55,7 @@ final class DependencyGraph
      */
     public function getStartOrder(): array
     {
-        if (empty($this->edges)) {
+        if ($this->edges === []) {
             return [];
         }
 
@@ -64,7 +64,7 @@ final class DependencyGraph
 
         // Sort by transitive dependent count (descending)
         $nodes = array_keys($this->edges);
-        usort($nodes, fn($a, $b) => $transitiveCounts[$b] <=> $transitiveCounts[$a]);
+        usort($nodes, static fn($a, $b) => $transitiveCounts[$b] <=> $transitiveCounts[$a]);
 
         return $nodes;
     }
@@ -81,9 +81,10 @@ final class DependencyGraph
 
         foreach (array_keys($this->edges) as $node) {
             if ($this->hasCycle($node, $visited, $recursionStack)) {
-                throw new \LogicException(
-                    sprintf('Circular ViewModel dependency detected: %s', implode(' -> ', $recursionStack))
-                );
+                throw new \LogicException(sprintf('Circular ViewModel dependency detected: %s', implode(
+                    ' -> ',
+                    $recursionStack,
+                )));
             }
         }
     }
@@ -94,7 +95,7 @@ final class DependencyGraph
      */
     private function hasCycle(string $node, array &$visited, array &$recursionStack): bool
     {
-        if (in_array($node, $recursionStack, true)) {
+        if (in_array($node, $recursionStack, strict: true)) {
             $recursionStack[] = $node; // Add to show the cycle
             return true;
         }
@@ -152,7 +153,7 @@ final class DependencyGraph
         $queue = $reverseDeps[$node] ?? [];
         $count = 0;
 
-        while (!empty($queue)) {
+        while ($queue !== []) {
             $current = array_shift($queue);
             if (isset($visited[$current])) {
                 continue;

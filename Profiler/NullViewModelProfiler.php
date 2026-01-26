@@ -12,6 +12,7 @@ use Toppy\AsyncViewModel\Context\ViewContext;
  */
 final class NullViewModelProfiler implements ViewModelProfilerInterface
 {
+    #[\Override]
     public function start(
         string $viewModelClass,
         ViewContext $viewContext,
@@ -21,31 +22,37 @@ final class NullViewModelProfiler implements ViewModelProfilerInterface
         // No-op
     }
 
+    #[\Override]
     public function finish(string $viewModelClass, mixed $result): void
     {
         // No-op
     }
 
+    #[\Override]
     public function fail(string $viewModelClass, \Throwable $exception): void
     {
         // No-op
     }
 
+    #[\Override]
     public function recordCacheHit(string $viewModelClass, string $cacheStatus, float $startTime, float $endTime): void
     {
         // No-op
     }
 
+    #[\Override]
     public function getEntries(): array
     {
         return [];
     }
 
+    #[\Override]
     public function getParallelEfficiency(): float
     {
         return 1.0;
     }
 
+    #[\Override]
     public function getTotalTime(): float
     {
         return 0.0;

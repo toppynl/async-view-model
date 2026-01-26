@@ -11,11 +11,16 @@ use Toppy\AsyncViewModel\Context\ViewContext;
 
 /**
  * Stub ViewModel used in parent templates for inheritance testing.
+ *
+ * @implements AsyncViewModel<\stdClass>
  */
 final class ParentStubViewModel implements AsyncViewModel
 {
+    #[\Override]
     public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
     {
-        return Future::complete(['parent' => true]);
+        $data = new \stdClass();
+        $data->parent = true;
+        return Future::complete($data);
     }
 }
