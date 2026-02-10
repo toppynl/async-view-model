@@ -10,6 +10,10 @@ interface ContextResolverInterface
 
     public function setRequestContext(RequestContext $context): void;
 
+    public function hasViewContext(): bool;
+
+    public function hasRequestContext(): bool;
+
     /**
      * Get ViewContext, or empty default if not set.
      */
