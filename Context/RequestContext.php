@@ -45,7 +45,7 @@ readonly class RequestContext
         }
 
         // Fallback to base class for unknown types
-        return new self($params, $requestId);
+        return new static($params, $requestId);
     }
 
     public function get(string $key, mixed $default = null): mixed
