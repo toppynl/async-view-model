@@ -7,6 +7,7 @@ namespace Toppy\AsyncViewModel\Tests\Unit\Cache;
 use Amp\Future;
 use PHPUnit\Framework\TestCase;
 use Psr\Container\ContainerInterface;
+use Revolt\EventLoop;
 use Toppy\AsyncViewModel\AsyncViewModel;
 use Toppy\AsyncViewModel\Cache\CacheableViewModel;
 use Toppy\AsyncViewModel\Cache\CacheEntry;
@@ -360,6 +361,264 @@ final class CachingViewModelDecoratorTest extends TestCase
         $result = $decorator->preloadWithFuture('SomeClass');
 
         static::assertSame($expectedFuture, $result);
+    }
+
+    public function testPreloadedCacheableViewModelIsResolvedOnceAndConsumedByGet(): void
+    {
+        $freshValue = new \stdClass();
+        $freshValue->fresh = true;
+
+        $calls = 0;
+        $viewModel = new class($freshValue, $calls) implements CacheableViewModel {
+            /**
+             * @param-out int $calls
+             */
+            public function __construct(
+                private readonly object $value,
+                private int &$calls,
+            ) {}
+
+            #[\Override]
+            public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
+            {
+                ++$this->calls;
+                return Future::complete($this->value);
+            }
+
+            #[\Override]
+            public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
+            {
+                return 'test_key';
+            }
+
+            #[\Override]
+            public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
+            {
+                return ['tag1'];
+            }
+
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 3600;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 86400;
+            }
+        };
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $cache = $this->createMock(SwrCacheInterface::class);
+        $cache->method('get')->willReturn(null);
+        // The resolved value is stored exactly once.
+        $cache->expects($this->once())->method('set');
+
+        // Cacheable view models must NOT be delegated to the inner manager, otherwise
+        // their preloaded Future is orphaned (never awaited) and leaks on rejection.
+        $inner = $this->createMock(ViewModelManagerInterface::class);
+        $inner->expects($this->never())->method('preload');
+        $inner->expects($this->never())->method('get');
+
+        $decorator = new CachingViewModelDecorator(
+            $inner,
+            $container,
+            $cache,
+            $this->createContextResolver(),
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        $decorator->preload('CacheableViewModel');
+        $result = $decorator->get('CacheableViewModel');
+
+        static::assertSame($freshValue, $result);
+        // preload() started the fetch; get() awaited that same Future rather than
+        // resolving a second time.
+        static::assertSame(1, $calls);
+    }
+
+    public function testPreloadDoesNotStartFetchWhenCacheIsFresh(): void
+    {
+        $cachedValue = new \stdClass();
+        $cachedValue->cached = true;
+        $entry = new CacheEntry($cachedValue, time(), 300, 3600, 86400);
+
+        $calls = 0;
+        $viewModel = new class($calls) implements CacheableViewModel {
+            /**
+             * @param-out int $calls
+             */
+            public function __construct(
+                private int &$calls,
+            ) {}
+
+            #[\Override]
+            public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
+            {
+                ++$this->calls;
+                return Future::complete(new \stdClass());
+            }
+
+            #[\Override]
+            public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
+            {
+                return 'test_key';
+            }
+
+            #[\Override]
+            public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
+            {
+                return ['tag1'];
+            }
+
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 3600;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 86400;
+            }
+        };
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $cache = $this->createStub(SwrCacheInterface::class);
+        $cache->method('get')->willReturn($entry);
+
+        $inner = $this->createStub(ViewModelManagerInterface::class);
+
+        $decorator = new CachingViewModelDecorator(
+            $inner,
+            $container,
+            $cache,
+            $this->createContextResolver(),
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        $decorator->preload('CacheableViewModel');
+        $result = $decorator->get('CacheableViewModel');
+
+        // Served entirely from cache; the view model is never resolved.
+        static::assertSame($cachedValue, $result);
+        static::assertSame(0, $calls);
+    }
+
+    public function testPreloadedFailingCacheableViewModelDoesNotEmitUnhandledError(): void
+    {
+        $caught = [];
+        $previousHandler = EventLoop::getErrorHandler();
+        EventLoop::setErrorHandler(static function (\Throwable $e) use (&$caught): void {
+            $caught[] = $e;
+        });
+
+        try {
+            $viewModel = new class implements CacheableViewModel {
+                #[\Override]
+                public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
+                {
+                    // Reject asynchronously, exactly like a CMS "no data" resolution.
+                    return \Amp\async(static function (): object {
+                        throw new \RuntimeException('async failure');
+                    });
+                }
+
+                #[\Override]
+                public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
+                {
+                    return 'test_key';
+                }
+
+                #[\Override]
+                public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
+                {
+                    return ['tag1'];
+                }
+
+                #[\Override]
+                public function getMaxAge(): int
+                {
+                    return 300;
+                }
+
+                #[\Override]
+                public function getStaleWhileRevalidate(): int
+                {
+                    return 0;
+                }
+
+                #[\Override]
+                public function getStaleIfError(): int
+                {
+                    return 0;
+                }
+            };
+
+            $container = $this->createStub(ContainerInterface::class);
+            $container->method('has')->willReturn(true);
+            $container->method('get')->willReturn($viewModel);
+
+            $cache = $this->createStub(SwrCacheInterface::class);
+            $cache->method('get')->willReturn(null);
+
+            $inner = $this->createStub(ViewModelManagerInterface::class);
+
+            $decorator = new CachingViewModelDecorator(
+                $inner,
+                $container,
+                $cache,
+                $this->createContextResolver(),
+                $this->createProfiler(),
+                new TimeEpoch(),
+            );
+
+            // Preload but deliberately never get() it (e.g. the template branch that
+            // needs this view model is not rendered for this request).
+            $decorator->preload('CacheableViewModel');
+
+            // Let the queued resolution run and reject.
+            \Amp\delay(0.05);
+
+            // Drop every reference so the rejected Future is garbage collected. An
+            // un-ignored rejected Future would forward an UnhandledFutureError here.
+            unset($decorator, $inner, $cache, $container, $viewModel);
+            gc_collect_cycles();
+
+            // Tick the loop so any error queued by a Future destructor would fire.
+            \Amp\delay(0.01);
+        } finally {
+            EventLoop::setErrorHandler($previousHandler);
+        }
+
+        static::assertSame(
+            [],
+            $caught,
+            'A preloaded cacheable view model that rejects must not surface as an UnhandledFutureError',
+        );
     }
 
     public function testCacheEntryMetadataIsStoredCorrectly(): void

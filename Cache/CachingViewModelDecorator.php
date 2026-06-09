@@ -23,6 +23,18 @@ use Toppy\AsyncViewModel\WithDependencies;
 // @mago-ignore analysis:invalid-return-statement,mixed-return-statement - PSR Container::get() returns mixed; vendor limitation
 final class CachingViewModelDecorator implements ViewModelManagerInterface
 {
+    /**
+     * In-flight resolutions for CacheableViewModels started by preload().
+     *
+     * get() awaits these instead of resolving a second time, so a preloaded
+     * cacheable view model is fetched exactly once. Every stored Future is
+     * ignore()d, so it can never surface as an UnhandledFutureError even when
+     * get() is never called for it.
+     *
+     * @var array<class-string, Future<object>>
+     */
+    private array $inflight = [];
+
     public function __construct(
         private readonly ViewModelManagerInterface $inner,
         private readonly ContainerInterface $viewModels,
@@ -37,25 +49,56 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
     #[\Override]
     public function preload(string $class): void
     {
-        $this->inner->preload($class);
+        $viewModel = $this->cacheableViewModel($class);
+
+        // Non-cacheable view models keep their pending Future on the inner manager,
+        // which get() consumes. Cacheable ones are resolved through this decorator's
+        // cache, so delegating their preload to inner would orphan that Future.
+        if ($viewModel === null) {
+            $this->inner->preload($class);
+            return;
+        }
+
+        $this->startInflight($class, $viewModel);
     }
 
     #[\Override]
     public function preloadAll(array $classes): void
     {
-        $this->inner->preloadAll($classes);
+        $deferred = [];
+
+        foreach ($classes as $class) {
+            $viewModel = $this->cacheableViewModel($class);
+            if ($viewModel === null) {
+                $deferred[] = $class;
+                continue;
+            }
+
+            $this->startInflight($class, $viewModel);
+        }
+
+        if ($deferred !== []) {
+            $this->inner->preloadAll($deferred);
+        }
     }
 
     #[\Override]
     public function preloadWithFuture(string $class): Future
     {
-        return $this->inner->preloadWithFuture($class);
+        $viewModel = $this->cacheableViewModel($class);
+        if ($viewModel === null) {
+            return $this->inner->preloadWithFuture($class);
+        }
+
+        // Either an in-flight fetch, or null when the cache can already serve it.
+        // @mago-ignore analysis:possibly-invalid-argument - Generic type variance issue; $class is validated at runtime
+        return $this->startInflight($class, $viewModel) ?? Future::complete($this->get($class));
     }
 
     #[\Override]
     public function all(): array
     {
-        return $this->inner->all();
+        return [...$this->inflight, ...$this->inner->all()];
     }
 
     /**
@@ -66,14 +109,9 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
     #[\Override]
     public function get(string $class): object
     {
-        if (!$this->viewModels->has($class)) {
-            return $this->inner->get($class);
-        }
+        $viewModel = $this->cacheableViewModel($class);
 
-        /** @var CacheableViewModel|mixed $viewModel */
-        $viewModel = $this->viewModels->get($class);
-
-        if (!$viewModel instanceof CacheableViewModel) {
+        if ($viewModel === null) {
             return $this->inner->get($class);
         }
 
@@ -102,7 +140,7 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
         }
 
         $this->logger->debug('Cache miss', ['key' => $key]);
-        return $this->fetchAndStore($viewModel, $key, $entry);
+        return $this->fetchAndStore($class, $viewModel, $key, $entry);
     }
 
     private function triggerRevalidation(CacheableViewModel $viewModel, string $key): void
@@ -161,23 +199,20 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
     /**
      * @throws \Throwable When the view model resolution fails and no stale entry is available
      */
-    private function fetchAndStore(CacheableViewModel $viewModel, string $key, ?CacheEntry $existingEntry): object
-    {
-        $viewContext = $this->contextResolver->getViewContext();
-        $requestContext = $this->contextResolver->getRequestContext();
-        $class = $viewModel::class;
-
-        $dependencies = $viewModel instanceof WithDependencies ? $viewModel->getDependencies() : [];
-
-        $this->profiler->start($class, $viewContext, $requestContext, $dependencies);
-
+    private function fetchAndStore(
+        string $class,
+        CacheableViewModel $viewModel,
+        string $key,
+        ?CacheEntry $existingEntry,
+    ): object {
         try {
-            $future = $viewModel->resolve($viewContext, $requestContext);
+            $future = $this->takeInflight($class, $viewModel);
             $value = $future->await();
             $this->profiler->finish($class, $value);
             $this->store($viewModel, $key, $value);
             return $value;
         } catch (\Throwable $e) {
+            unset($this->inflight[$class]);
             $this->profiler->fail($class, $e);
             if ($existingEntry?->isStaleServableOnError()) {
                 $now = $this->epoch->getElapsed();
@@ -191,6 +226,86 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
             }
             throw $e;
         }
+    }
+
+    /**
+     * Resolve the view model from the container, returning it only when it is a
+     * CacheableViewModel this decorator should handle; null otherwise (the call is
+     * then delegated to the inner manager unchanged).
+     */
+    private function cacheableViewModel(string $class): ?CacheableViewModel
+    {
+        if (!$this->viewModels->has($class)) {
+            return null;
+        }
+
+        $viewModel = $this->viewModels->get($class);
+
+        return $viewModel instanceof CacheableViewModel ? $viewModel : null;
+    }
+
+    /**
+     * Start (or reuse) the in-flight resolution for a cacheable view model so the
+     * request runs in parallel with the rest of the response, unless the cache can
+     * already serve it.
+     *
+     * @return Future<object>|null The in-flight Future, or null when a cached entry
+     *                             is available and get() will serve it without resolving.
+     */
+    private function startInflight(string $class, CacheableViewModel $viewModel): ?Future
+    {
+        if (isset($this->inflight[$class])) {
+            return $this->inflight[$class];
+        }
+
+        $viewContext = $this->contextResolver->getViewContext();
+        $requestContext = $this->contextResolver->getRequestContext();
+
+        $entry = $this->cache->get($viewModel->getCacheKey($viewContext, $requestContext));
+
+        // get() will serve fresh entries directly and stale-but-revalidatable entries
+        // while revalidating in the background, so no early fetch is needed for those.
+        if ($entry instanceof CacheEntry && ($entry->isFresh() || $entry->isStaleRevalidatable())) {
+            return null;
+        }
+
+        $dependencies = $viewModel instanceof WithDependencies ? $viewModel->getDependencies() : [];
+        $this->profiler->start($class, $viewContext, $requestContext, $dependencies);
+
+        // ignore() so a rejected Future is never forwarded to the event loop as an
+        // UnhandledFutureError if get() is never called for this class (e.g. the
+        // template branch that needs it is not rendered). fetchAndStore() awaits the
+        // very same Future, where the error is caught and handled normally.
+        $future = $viewModel->resolve($viewContext, $requestContext);
+        $future->ignore();
+        $this->inflight[$class] = $future;
+
+        return $future;
+    }
+
+    /**
+     * Take the in-flight Future started by preload(), or resolve now when the view
+     * model was not preloaded (mirroring the original, non-preloaded behaviour).
+     *
+     * @return Future<object>
+     */
+    private function takeInflight(string $class, CacheableViewModel $viewModel): Future
+    {
+        if (isset($this->inflight[$class])) {
+            $future = $this->inflight[$class];
+            unset($this->inflight[$class]);
+
+            return $future;
+        }
+
+        $viewContext = $this->contextResolver->getViewContext();
+        $requestContext = $this->contextResolver->getRequestContext();
+        $dependencies = $viewModel instanceof WithDependencies ? $viewModel->getDependencies() : [];
+
+        // Profiler is started here (not preloaded) so its timing covers the resolution.
+        $this->profiler->start($class, $viewContext, $requestContext, $dependencies);
+
+        return $viewModel->resolve($viewContext, $requestContext);
     }
 
     private function store(CacheableViewModel $viewModel, string $key, object $value): void
