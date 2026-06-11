@@ -218,7 +218,17 @@ final class ViewModelManager implements ViewModelManagerInterface, ResetInterfac
 
         $this->profiler->start($class, $viewContext, $requestContext, $dependencies);
 
-        $this->futures[$class] = $viewModel->resolve($viewContext, $requestContext);
+        $future = $viewModel->resolve($viewContext, $requestContext);
+
+        // ignore() so a rejected Future is never forwarded to the event loop as
+        // an UnhandledFutureError when it is dropped without being awaited
+        // (preloaded but never get()ed, or cleared by reset() between requests
+        // in worker mode — the loop outlives requests, so the error would
+        // surface in a later, unrelated request). Consumers still observe the
+        // rejection by awaiting through the lazy proxy.
+        $future->ignore();
+
+        $this->futures[$class] = $future;
     }
 
     /**

@@ -320,4 +320,61 @@ final class ViewModelManagerTest extends TestCase
         // StubViewModelWithData should be resolved (lazy proxy)
         static::assertInstanceOf(StubData::class, $all[StubViewModelWithData::class]);
     }
+
+    public function testPreloadedFailingViewModelDoesNotEmitUnhandledFutureError(): void
+    {
+        // In worker mode the event loop outlives requests. A preloaded view
+        // model whose Future rejects and is never get()ed must not surface as
+        // an UnhandledFutureError when reset() drops the last reference — that
+        // error would be rethrown into whichever request awaits next.
+        $caught = [];
+        $previousHandler = \Revolt\EventLoop::getErrorHandler();
+        \Revolt\EventLoop::setErrorHandler(static function (\Throwable $e) use (&$caught): void {
+            $caught[] = $e;
+        });
+
+        try {
+            $viewModel = new class implements AsyncViewModel {
+                /**
+                 * @return Future<StubData>
+                 */
+                #[\Override]
+                public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
+                {
+                    return \Amp\async(static function (): object {
+                        throw new \RuntimeException('async failure');
+                    });
+                }
+            };
+
+            $container = $this->createStub(ContainerInterface::class);
+            $container->method('has')->willReturn(true);
+            $container->method('get')->willReturn($viewModel);
+
+            $manager = new ViewModelManager($container, new NullViewModelProfiler(), $this->createContextResolver());
+
+            // Preload but never get() (e.g. the template branch that needs it
+            // is not rendered, or the controller aborts with a 404).
+            $manager->preload('FailingViewModel');
+
+            // Let the queued resolution run and reject.
+            \Amp\delay(0.05);
+
+            // End of request: kernel.reset drops the Future reference.
+            $manager->reset();
+            unset($manager, $container, $viewModel);
+            gc_collect_cycles();
+
+            // Next request ticks the loop; a queued UnhandledFutureError fires here.
+            \Amp\delay(0.01);
+        } finally {
+            \Revolt\EventLoop::setErrorHandler($previousHandler);
+        }
+
+        static::assertSame(
+            [],
+            $caught,
+            'A preloaded view model that rejects must not surface as an UnhandledFutureError',
+        );
+    }
 }
