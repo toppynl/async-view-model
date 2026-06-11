@@ -813,6 +813,250 @@ final class CachingViewModelDecoratorTest extends TestCase
         $decorator->get('CacheableViewModel');
     }
 
+    public function testBackgroundRevalidationUsesContextsFromTriggeringRequest(): void
+    {
+        // In worker mode (FrankenPHP) the event loop outlives the request: a
+        // revalidation fiber scheduled by request A may only execute while
+        // request B is being handled, when the context resolver already holds
+        // B's contexts. Revalidation must therefore use the contexts captured
+        // when the stale hit occurred, never re-read them from the resolver.
+        $staleValue = new \stdClass();
+        $staleValue->stale = true;
+        $entry = new CacheEntry($staleValue, time() - 400, 300, 3_600, 86_400);
+
+        $viewModel = $this->createContextSensitiveViewModel();
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $storedKey = null;
+        $storedValue = null;
+        $storedTags = null;
+        $cache = $this->createMock(SwrCacheInterface::class);
+        $cache->method('get')->willReturn($entry);
+        $cache
+            ->expects($this->once())
+            ->method('set')
+            ->with(
+                static::callback(static function (string $key) use (&$storedKey): bool {
+                    $storedKey = $key;
+                    return true;
+                }),
+                static::callback(static function (CacheEntry $e) use (&$storedValue): bool {
+                    $storedValue = $e->value;
+                    return true;
+                }),
+                static::callback(static function (array $tags) use (&$storedTags): bool {
+                    $storedTags = $tags;
+                    return true;
+                }),
+            );
+
+        $resolver = $this->createMutableContextResolver();
+        $resolver->setRequestContext(RequestContext::create(['id' => 123], 'request-a'));
+
+        $decorator = new CachingViewModelDecorator(
+            $this->createStub(ViewModelManagerInterface::class),
+            $container,
+            $cache,
+            $resolver,
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        // Request A: stale hit schedules a background revalidation for key_123.
+        $result = $decorator->get('CacheableViewModel');
+        static::assertSame($staleValue, $result);
+
+        // Request B arrives on the same worker before the fiber runs.
+        $resolver->setRequestContext(RequestContext::create(['id' => 456], 'request-b'));
+
+        // Pump the event loop so the pending revalidation executes.
+        \Amp\delay(0.05);
+
+        static::assertSame(
+            'key_123',
+            $storedKey,
+            'Revalidated entry must be stored under the key of the request that triggered it',
+        );
+        static::assertInstanceOf(\stdClass::class, $storedValue);
+        static::assertSame(
+            123,
+            $storedValue->id,
+            'Revalidation must resolve with the triggering request\'s context, not the current one',
+        );
+        static::assertSame(
+            ['tag_123'],
+            $storedTags,
+            'Cache tags must be computed from the triggering request\'s context',
+        );
+    }
+
+    public function testResetClearsInflightPreloads(): void
+    {
+        // The decorator holds in-flight futures keyed by class. In worker mode
+        // it must be reset between requests, otherwise a preloaded-but-never-
+        // consumed future from request A is handed to request B and stored
+        // under B's cache key.
+        $viewModel = $this->createContextSensitiveViewModel();
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $storedKey = null;
+        $storedValue = null;
+        $cache = $this->createMock(SwrCacheInterface::class);
+        $cache->method('get')->willReturn(null);
+        $cache
+            ->expects($this->once())
+            ->method('set')
+            ->with(
+                static::callback(static function (string $key) use (&$storedKey): bool {
+                    $storedKey = $key;
+                    return true;
+                }),
+                static::callback(static function (CacheEntry $e) use (&$storedValue): bool {
+                    $storedValue = $e->value;
+                    return true;
+                }),
+                static::anything(),
+            );
+
+        $resolver = $this->createMutableContextResolver();
+        $resolver->setRequestContext(RequestContext::create(['id' => 123], 'request-a'));
+
+        $decorator = new CachingViewModelDecorator(
+            $this->createStub(ViewModelManagerInterface::class),
+            $container,
+            $cache,
+            $resolver,
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        static::assertInstanceOf(
+            \Toppy\AsyncViewModel\ResetInterface::class,
+            $decorator,
+            'Decorator holds request-scoped state and must be resettable between requests',
+        );
+
+        // Request A preloads but never consumes (e.g. template branch not rendered).
+        $decorator->preload('CacheableViewModel');
+
+        // End of request A.
+        $decorator->reset();
+
+        // Request B with a different id must resolve with its own context.
+        $resolver->setRequestContext(RequestContext::create(['id' => 456], 'request-b'));
+        $decorator->preload('CacheableViewModel');
+        $result = $decorator->get('CacheableViewModel');
+
+        static::assertInstanceOf(\stdClass::class, $result);
+        static::assertSame(456, $result->id, 'Request B must receive a value resolved with its own context');
+        static::assertSame('key_456', $storedKey);
+        static::assertInstanceOf(\stdClass::class, $storedValue);
+        static::assertSame(456, $storedValue->id);
+    }
+
+    /**
+     * View model whose value, cache key and tags all depend on the request
+     * context, mirroring real per-id view models like a CMS submenu.
+     */
+    private function createContextSensitiveViewModel(): CacheableViewModel
+    {
+        return new class implements CacheableViewModel {
+            #[\Override]
+            public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
+            {
+                $value = new \stdClass();
+                $value->id = $requestContext->get('id');
+                return Future::complete($value);
+            }
+
+            #[\Override]
+            public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
+            {
+                return 'key_' . $requestContext->get('id');
+            }
+
+            #[\Override]
+            public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
+            {
+                return ['tag_' . $requestContext->get('id')];
+            }
+
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 3_600;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 86_400;
+            }
+        };
+    }
+
+    /**
+     * Context resolver whose request context can be swapped mid-test to
+     * simulate the next request arriving on the same worker.
+     */
+    private function createMutableContextResolver(): ContextResolverInterface
+    {
+        return new class($this->viewContext, $this->requestContext) implements ContextResolverInterface {
+            public function __construct(
+                private ViewContext $viewContext,
+                private RequestContext $requestContext,
+            ) {}
+
+            #[\Override]
+            public function setViewContext(ViewContext $context): void
+            {
+                $this->viewContext = $context;
+            }
+
+            #[\Override]
+            public function setRequestContext(RequestContext $context): void
+            {
+                $this->requestContext = $context;
+            }
+
+            #[\Override]
+            public function hasViewContext(): bool
+            {
+                return true;
+            }
+
+            #[\Override]
+            public function hasRequestContext(): bool
+            {
+                return true;
+            }
+
+            #[\Override]
+            public function getViewContext(): ViewContext
+            {
+                return $this->viewContext;
+            }
+
+            #[\Override]
+            public function getRequestContext(): RequestContext
+            {
+                return $this->requestContext;
+            }
+        };
+    }
+
     private function createContextResolver(): ContextResolverInterface
     {
         $resolver = $this->createStub(ContextResolverInterface::class);

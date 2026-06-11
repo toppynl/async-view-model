@@ -9,8 +9,11 @@ use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Toppy\AsyncViewModel\Context\ContextResolverInterface;
+use Toppy\AsyncViewModel\Context\RequestContext;
+use Toppy\AsyncViewModel\Context\ViewContext;
 use Toppy\AsyncViewModel\Profiler\TimeEpoch;
 use Toppy\AsyncViewModel\Profiler\ViewModelProfilerInterface;
+use Toppy\AsyncViewModel\ResetInterface;
 use Toppy\AsyncViewModel\ViewModelManagerInterface;
 use Toppy\AsyncViewModel\WithDependencies;
 
@@ -21,7 +24,7 @@ use Toppy\AsyncViewModel\WithDependencies;
  * Non-cacheable ViewModels pass through unchanged.
  */
 // @mago-ignore analysis:invalid-return-statement,mixed-return-statement - PSR Container::get() returns mixed; vendor limitation
-final class CachingViewModelDecorator implements ViewModelManagerInterface
+final class CachingViewModelDecorator implements ViewModelManagerInterface, ResetInterface
 {
     /**
      * In-flight resolutions for CacheableViewModels started by preload().
@@ -133,22 +136,40 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
 
             if ($entry->isStaleRevalidatable()) {
                 $endTime = $this->epoch->getElapsed();
-                $this->triggerRevalidation($viewModel, $key);
+                $this->triggerRevalidation($viewModel, $key, $viewContext, $requestContext);
                 $this->profiler->recordCacheHit($class, 'stale', $startTime, $endTime);
                 return $entry->value;
             }
         }
 
         $this->logger->debug('Cache miss', ['key' => $key]);
-        return $this->fetchAndStore($class, $viewModel, $key, $entry);
+        return $this->fetchAndStore($class, $viewModel, $key, $entry, $viewContext, $requestContext);
     }
 
-    private function triggerRevalidation(CacheableViewModel $viewModel, string $key): void
+    #[\Override]
+    public function reset(): void
     {
+        $this->inflight = [];
+    }
+
+    /**
+     * The revalidation fiber may only execute after the triggering request has
+     * finished (the worker's event loop outlives requests), when the context
+     * resolver already holds the NEXT request's contexts. The contexts that
+     * produced $key are therefore captured here and passed along; re-reading
+     * the resolver inside the fiber would store another request's data under
+     * this key.
+     */
+    private function triggerRevalidation(
+        CacheableViewModel $viewModel,
+        string $key,
+        ViewContext $viewContext,
+        RequestContext $requestContext,
+    ): void {
         // If no lock configured, always revalidate (backward compatible)
         if ($this->revalidationLock === null) {
             $this->logger->debug('Cache hit (stale), revalidating', ['key' => $key]);
-            \Amp\async(fn() => $this->revalidate($viewModel, $key));
+            \Amp\async(fn() => $this->revalidate($viewModel, $key, $viewContext, $requestContext));
             return;
         }
 
@@ -159,13 +180,15 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
         }
 
         $this->logger->debug('Cache hit (stale), revalidating with lock', ['key' => $key]);
-        \Amp\async(fn() => $this->revalidateWithLock($viewModel, $key));
+        \Amp\async(fn() => $this->revalidateWithLock($viewModel, $key, $viewContext, $requestContext));
     }
 
-    private function revalidate(CacheableViewModel $viewModel, string $key): void
-    {
-        $viewContext = $this->contextResolver->getViewContext();
-        $requestContext = $this->contextResolver->getRequestContext();
+    private function revalidate(
+        CacheableViewModel $viewModel,
+        string $key,
+        ViewContext $viewContext,
+        RequestContext $requestContext,
+    ): void {
         $class = $viewModel::class;
 
         $dependencies = $viewModel instanceof WithDependencies ? $viewModel->getDependencies() : [];
@@ -176,7 +199,7 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
             $future = $viewModel->resolve($viewContext, $requestContext);
             $value = $future->await();
             $this->profiler->finish($class, $value);
-            $this->store($viewModel, $key, $value);
+            $this->store($viewModel, $key, $value, $viewContext, $requestContext);
             $this->logger->debug('Background revalidation succeeded', ['key' => $key]);
         } catch (\Throwable $e) {
             $this->profiler->fail($class, $e);
@@ -187,10 +210,14 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
         }
     }
 
-    private function revalidateWithLock(CacheableViewModel $viewModel, string $key): void
-    {
+    private function revalidateWithLock(
+        CacheableViewModel $viewModel,
+        string $key,
+        ViewContext $viewContext,
+        RequestContext $requestContext,
+    ): void {
         try {
-            $this->revalidate($viewModel, $key);
+            $this->revalidate($viewModel, $key, $viewContext, $requestContext);
         } finally {
             $this->revalidationLock?->release($key);
         }
@@ -204,12 +231,14 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
         CacheableViewModel $viewModel,
         string $key,
         ?CacheEntry $existingEntry,
+        ViewContext $viewContext,
+        RequestContext $requestContext,
     ): object {
         try {
-            $future = $this->takeInflight($class, $viewModel);
+            $future = $this->takeInflight($class, $viewModel, $viewContext, $requestContext);
             $value = $future->await();
             $this->profiler->finish($class, $value);
-            $this->store($viewModel, $key, $value);
+            $this->store($viewModel, $key, $value, $viewContext, $requestContext);
             return $value;
         } catch (\Throwable $e) {
             unset($this->inflight[$class]);
@@ -289,8 +318,12 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
      *
      * @return Future<object>
      */
-    private function takeInflight(string $class, CacheableViewModel $viewModel): Future
-    {
+    private function takeInflight(
+        string $class,
+        CacheableViewModel $viewModel,
+        ViewContext $viewContext,
+        RequestContext $requestContext,
+    ): Future {
         if (isset($this->inflight[$class])) {
             $future = $this->inflight[$class];
             unset($this->inflight[$class]);
@@ -298,8 +331,6 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
             return $future;
         }
 
-        $viewContext = $this->contextResolver->getViewContext();
-        $requestContext = $this->contextResolver->getRequestContext();
         $dependencies = $viewModel instanceof WithDependencies ? $viewModel->getDependencies() : [];
 
         // Profiler is started here (not preloaded) so its timing covers the resolution.
@@ -308,11 +339,13 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface
         return $viewModel->resolve($viewContext, $requestContext);
     }
 
-    private function store(CacheableViewModel $viewModel, string $key, object $value): void
-    {
-        $viewContext = $this->contextResolver->getViewContext();
-        $requestContext = $this->contextResolver->getRequestContext();
-
+    private function store(
+        CacheableViewModel $viewModel,
+        string $key,
+        object $value,
+        ViewContext $viewContext,
+        RequestContext $requestContext,
+    ): void {
         $entry = new CacheEntry(
             value: $value,
             createdAt: time(),
