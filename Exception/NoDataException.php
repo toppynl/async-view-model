@@ -15,6 +15,9 @@ final class NoDataException extends \RuntimeException
     public function __construct(
         public readonly string $viewModelClass,
         string $message = 'ViewModel resolved with no data',
+        public readonly ?int $ttl = null,
+        public readonly ?int $staleWhileRevalidate = null,
+        public readonly ?int $staleIfError = null,
     ) {
         parent::__construct($message);
     }

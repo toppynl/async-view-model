@@ -16,6 +16,8 @@ use Toppy\AsyncViewModel\Cache\SwrCacheInterface;
 use Toppy\AsyncViewModel\Context\ContextResolverInterface;
 use Toppy\AsyncViewModel\Context\RequestContext;
 use Toppy\AsyncViewModel\Context\ViewContext;
+use Toppy\AsyncViewModel\Exception\NoDataException;
+use Toppy\AsyncViewModel\Exception\ViewModelResolutionException;
 use Toppy\AsyncViewModel\Profiler\TimeEpoch;
 use Toppy\AsyncViewModel\Profiler\ViewModelProfilerInterface;
 use Toppy\AsyncViewModel\ViewModelManagerInterface;
@@ -293,6 +295,320 @@ final class CachingViewModelDecoratorTest extends TestCase
 
         static::expectException(\RuntimeException::class);
         static::expectExceptionMessage('Simulated failure');
+
+        $decorator->get('CacheableViewModel');
+    }
+
+    public function testNoDataExceptionStoresNegativeEntryAndRethrows(): void
+    {
+        $viewModel = $this->createNoDataCacheableViewModel(ttl: 300);
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $storedEntry = null;
+        $cache = $this->createMock(SwrCacheInterface::class);
+        $cache->method('get')->willReturn(null);
+        $cache
+            ->expects($this->once())
+            ->method('set')
+            ->with(
+                'test_key',
+                static::callback(static function (CacheEntry $entry) use (&$storedEntry): bool {
+                    $storedEntry = $entry;
+                    return $entry->isNegative;
+                }),
+                ['tag1'],
+            );
+
+        $inner = $this->createStub(ViewModelManagerInterface::class);
+
+        $decorator = new CachingViewModelDecorator(
+            $inner,
+            $container,
+            $cache,
+            $this->createContextResolver(),
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        try {
+            $decorator->get('CacheableViewModel');
+            static::fail('Expected NoDataException to be rethrown');
+        } catch (NoDataException $e) {
+            static::assertSame('CacheableViewModel', $e->viewModelClass);
+        }
+
+        static::assertInstanceOf(CacheEntry::class, $storedEntry);
+        static::assertTrue($storedEntry->isNegative);
+        static::assertNull($storedEntry->value);
+        static::assertSame(300, $storedEntry->maxAge);
+    }
+
+    public function testFreshNegativeCacheHitThrowsWithoutResolving(): void
+    {
+        $entry = CacheEntry::negative(time(), 300, 3600, 86400);
+
+        $calls = 0;
+        $viewModel = new class($calls) implements CacheableViewModel {
+            /**
+             * @param-out int $calls
+             */
+            public function __construct(
+                private int &$calls,
+            ) {}
+
+            #[\Override]
+            public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
+            {
+                ++$this->calls;
+                return Future::complete(new \stdClass());
+            }
+
+            #[\Override]
+            public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
+            {
+                return 'test_key';
+            }
+
+            #[\Override]
+            public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
+            {
+                return ['tag1'];
+            }
+
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 3600;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 86400;
+            }
+        };
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $cache = $this->createMock(SwrCacheInterface::class);
+        $cache->method('get')->willReturn($entry);
+        $cache->expects($this->never())->method('set');
+
+        $inner = $this->createStub(ViewModelManagerInterface::class);
+
+        $decorator = new CachingViewModelDecorator(
+            $inner,
+            $container,
+            $cache,
+            $this->createContextResolver(),
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        static::expectException(NoDataException::class);
+
+        try {
+            $decorator->get('CacheableViewModel');
+        } finally {
+            static::assertSame(0, $calls, 'resolve() must not be called on a negative cache hit');
+        }
+    }
+
+    public function testStaleNegativeCacheHitThrowsAndRevalidationRehydratesNegativeEntry(): void
+    {
+        // A stale-but-revalidatable negative entry: age 400 > maxAge 300, but well
+        // within the SWR window (300 + 3600). isStaleRevalidatable() is therefore true.
+        $entry = new CacheEntry(
+            value: null,
+            createdAt: time() - 400,
+            maxAge: 300,
+            staleWhileRevalidate: 3600,
+            staleIfError: 3600,
+            isNegative: true,
+        );
+        static::assertTrue($entry->isStaleRevalidatable(), 'fixture must be a stale-revalidatable entry');
+        static::assertFalse($entry->isFresh(), 'fixture must not be fresh');
+
+        // Background revalidation resolves to "still no data": resolve() returns a
+        // Future that rejects with NoDataException, so revalidate() must re-store a
+        // fresh negative entry rather than treat it as a failure.
+        $resolveCalls = 0;
+        $viewModel = new class($resolveCalls) implements CacheableViewModel {
+            /**
+             * @param-out int $resolveCalls
+             */
+            public function __construct(
+                private int &$resolveCalls,
+            ) {}
+
+            /**
+             * @throws NoDataException
+             */
+            #[\Override]
+            public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
+            {
+                ++$this->resolveCalls;
+
+                return \Amp\async(static function (): object {
+                    throw new NoDataException('CacheableViewModel', 'No data on revalidate');
+                });
+            }
+
+            #[\Override]
+            public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
+            {
+                return 'test_key';
+            }
+
+            #[\Override]
+            public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
+            {
+                return ['tag1'];
+            }
+
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 3600;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 3600;
+            }
+        };
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $storedEntry = null;
+        $cache = $this->createMock(SwrCacheInterface::class);
+        $cache->method('get')->willReturn($entry);
+        // The background revalidation must re-store a negative entry to keep it warm.
+        $cache
+            ->expects($this->once())
+            ->method('set')
+            ->with(
+                'test_key',
+                static::callback(static function (CacheEntry $e) use (&$storedEntry): bool {
+                    $storedEntry = $e;
+                    return $e->isNegative;
+                }),
+                ['tag1'],
+            );
+
+        $inner = $this->createStub(ViewModelManagerInterface::class);
+
+        $decorator = new CachingViewModelDecorator(
+            $inner,
+            $container,
+            $cache,
+            $this->createContextResolver(),
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        // 1. A stale negative entry makes get() throw NoDataException ("No data (stale)")...
+        try {
+            $decorator->get('CacheableViewModel');
+            static::fail('Expected NoDataException for a stale negative cache hit');
+        } catch (NoDataException $e) {
+            static::assertSame('No data (stale)', $e->getMessage());
+        }
+
+        // 2. ...while still triggering background revalidation (not swallowing it).
+        \Amp\delay(0.05);
+        static::assertSame(1, $resolveCalls, 'stale negative hit must trigger background revalidation');
+
+        // 3. The revalidation, itself producing NoData, re-stores a fresh negative entry.
+        static::assertInstanceOf(CacheEntry::class, $storedEntry);
+        static::assertTrue($storedEntry->isNegative);
+        static::assertNull($storedEntry->value);
+    }
+
+    public function testResolutionExceptionIsNotNegativeCached(): void
+    {
+        $viewModel = new class implements CacheableViewModel {
+            /**
+             * @throws ViewModelResolutionException
+             */
+            #[\Override]
+            public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
+            {
+                throw new ViewModelResolutionException('CacheableViewModel', 'Real failure');
+            }
+
+            #[\Override]
+            public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
+            {
+                return 'test_key';
+            }
+
+            #[\Override]
+            public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
+            {
+                return ['tag1'];
+            }
+
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 0;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 0;
+            }
+        };
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $cache = $this->createMock(SwrCacheInterface::class);
+        $cache->method('get')->willReturn(null);
+        $cache->expects($this->never())->method('set');
+
+        $inner = $this->createStub(ViewModelManagerInterface::class);
+
+        $decorator = new CachingViewModelDecorator(
+            $inner,
+            $container,
+            $cache,
+            $this->createContextResolver(),
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        static::expectException(ViewModelResolutionException::class);
+        static::expectExceptionMessage('Real failure');
 
         $decorator->get('CacheableViewModel');
     }
@@ -1165,6 +1481,54 @@ final class CachingViewModelDecoratorTest extends TestCase
             public function getStaleIfError(): int
             {
                 return $this->staleIfError;
+            }
+        };
+    }
+
+    private function createNoDataCacheableViewModel(?int $ttl = null): CacheableViewModel
+    {
+        return new class($ttl) implements CacheableViewModel {
+            public function __construct(
+                private readonly ?int $ttl,
+            ) {}
+
+            /**
+             * @throws NoDataException
+             */
+            #[\Override]
+            public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
+            {
+                throw new NoDataException('CacheableViewModel', ttl: $this->ttl);
+            }
+
+            #[\Override]
+            public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
+            {
+                return 'test_key';
+            }
+
+            #[\Override]
+            public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
+            {
+                return ['tag1'];
+            }
+
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 3600;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 86400;
             }
         };
     }

@@ -11,6 +11,7 @@ use Psr\Log\NullLogger;
 use Toppy\AsyncViewModel\Context\ContextResolverInterface;
 use Toppy\AsyncViewModel\Context\RequestContext;
 use Toppy\AsyncViewModel\Context\ViewContext;
+use Toppy\AsyncViewModel\Exception\NoDataException;
 use Toppy\AsyncViewModel\Profiler\TimeEpoch;
 use Toppy\AsyncViewModel\Profiler\ViewModelProfilerInterface;
 use Toppy\AsyncViewModel\ResetInterface;
@@ -131,6 +132,9 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
                 $endTime = $this->epoch->getElapsed();
                 $this->logger->debug('Cache hit (fresh)', ['key' => $key]);
                 $this->profiler->recordCacheHit($class, 'cached', $startTime, $endTime);
+                if ($entry->isNegative) {
+                    throw new NoDataException($class, 'No data (cached)');
+                }
                 return $entry->value;
             }
 
@@ -138,6 +142,9 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
                 $endTime = $this->epoch->getElapsed();
                 $this->triggerRevalidation($viewModel, $key, $viewContext, $requestContext);
                 $this->profiler->recordCacheHit($class, 'stale', $startTime, $endTime);
+                if ($entry->isNegative) {
+                    throw new NoDataException($class, 'No data (stale)');
+                }
                 return $entry->value;
             }
         }
@@ -201,6 +208,12 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
             $this->profiler->finish($class, $value);
             $this->store($viewModel, $key, $value, $viewContext, $requestContext);
             $this->logger->debug('Background revalidation succeeded', ['key' => $key]);
+        } catch (NoDataException $e) {
+            // Background refresh produced no data: keep the negative entry warm
+            // so the empty case stays cached rather than re-fetching every render.
+            $this->profiler->fail($class, $e);
+            $this->storeNegative($viewModel, $key, $e, $viewContext, $requestContext);
+            $this->logger->debug('Background revalidation produced no data', ['key' => $key]);
         } catch (\Throwable $e) {
             $this->profiler->fail($class, $e);
             $this->logger->warning('Background revalidation failed', [
@@ -240,6 +253,14 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
             $this->profiler->finish($class, $value);
             $this->store($viewModel, $key, $value, $viewContext, $requestContext);
             return $value;
+        } catch (NoDataException $e) {
+            // A legitimately empty resolution: store a negative entry so the
+            // empty/404 case is served from cache instead of re-fetching on
+            // every render, then rethrow so view() maps it to an empty result.
+            unset($this->inflight[$class]);
+            $this->profiler->fail($class, $e);
+            $this->storeNegative($viewModel, $key, $e, $viewContext, $requestContext);
+            throw $e;
         } catch (\Throwable $e) {
             unset($this->inflight[$class]);
             $this->profiler->fail($class, $e);
@@ -352,6 +373,29 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
             maxAge: $viewModel->getMaxAge(),
             staleWhileRevalidate: $viewModel->getStaleWhileRevalidate(),
             staleIfError: $viewModel->getStaleIfError(),
+        );
+
+        $this->cache->set($key, $entry, $viewModel->getCacheTags($viewContext, $requestContext));
+    }
+
+    /**
+     * Store a negative cache entry for a legitimately empty resolution.
+     *
+     * The policy carried on the NoDataException wins; otherwise it falls back to
+     * the view model's own TTL/SWR/SIE, keeping negative caching on by default.
+     */
+    private function storeNegative(
+        CacheableViewModel $viewModel,
+        string $key,
+        NoDataException $e,
+        ViewContext $viewContext,
+        RequestContext $requestContext,
+    ): void {
+        $entry = CacheEntry::negative(
+            createdAt: time(),
+            maxAge: $e->ttl ?? $viewModel->getMaxAge(),
+            staleWhileRevalidate: $e->staleWhileRevalidate ?? $viewModel->getStaleWhileRevalidate(),
+            staleIfError: $e->staleIfError ?? $viewModel->getStaleIfError(),
         );
 
         $this->cache->set($key, $entry, $viewModel->getCacheTags($viewContext, $requestContext));

@@ -18,7 +18,29 @@ final readonly class CacheEntry
         public int $maxAge,
         public int $staleWhileRevalidate,
         public int $staleIfError,
+        public bool $isNegative = false,
     ) {}
+
+    /**
+     * Create a negative cache entry representing a legitimately empty resolution
+     * (NoDataException), so the empty/404 case is served from cache instead of
+     * re-hitting the source on every render.
+     */
+    public static function negative(
+        int $createdAt,
+        int $maxAge,
+        int $staleWhileRevalidate = 0,
+        int $staleIfError = 0,
+    ): self {
+        return new self(
+            value: null,
+            createdAt: $createdAt,
+            maxAge: $maxAge,
+            staleWhileRevalidate: $staleWhileRevalidate,
+            staleIfError: $staleIfError,
+            isNegative: true,
+        );
+    }
 
     /**
      * Age of the entry in seconds.

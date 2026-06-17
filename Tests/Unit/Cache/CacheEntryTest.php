@@ -108,6 +108,37 @@ final class CacheEntryTest extends TestCase
         static::assertSame('test', $entry->value->name);
     }
 
+    public function testNormalEntryIsNotNegative(): void
+    {
+        $entry = new CacheEntry('value', 1000, 300, 3600, 86400);
+
+        static::assertFalse($entry->isNegative);
+    }
+
+    public function testNegativeFactoryCreatesNegativeEntry(): void
+    {
+        $createdAt = 1000;
+        $entry = CacheEntry::negative($createdAt, 300, 3600, 86400);
+
+        static::assertTrue($entry->isNegative);
+        static::assertNull($entry->value);
+        static::assertSame(300, $entry->maxAge);
+        static::assertSame(3600, $entry->staleWhileRevalidate);
+        static::assertSame(86400, $entry->staleIfError);
+        static::assertTrue($entry->isFresh($createdAt));
+        static::assertTrue($entry->isFresh($createdAt + 300));
+        static::assertFalse($entry->isFresh($createdAt + 301));
+    }
+
+    public function testNegativeFactoryStaleWindowsDefaultToZero(): void
+    {
+        $entry = CacheEntry::negative(1000, 300);
+
+        static::assertTrue($entry->isNegative);
+        static::assertSame(0, $entry->staleWhileRevalidate);
+        static::assertSame(0, $entry->staleIfError);
+    }
+
     public function testDisabledSwrWindow(): void
     {
         $createdAt = 1000;
