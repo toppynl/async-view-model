@@ -95,8 +95,20 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
         }
 
         // Either an in-flight fetch, or null when the cache can already serve it.
+        $inflight = $this->startInflight($class, $viewModel);
+        if ($inflight !== null) {
+            return $inflight;
+        }
+
+        // get() serves from cache here, but a negative hit throws NoDataException.
+        // That must surface as a rejected Future the caller can gate/await, never
+        // as a synchronous throw escaping preloadWithFuture().
         // @mago-ignore analysis:possibly-invalid-argument - Generic type variance issue; $class is validated at runtime
-        return $this->startInflight($class, $viewModel) ?? Future::complete($this->get($class));
+        try {
+            return Future::complete($this->get($class));
+        } catch (\Throwable $e) {
+            return Future::error($e);
+        }
     }
 
     #[\Override]
@@ -272,6 +284,12 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
                 ]);
                 // Duration is 0 as the actual resolution time is captured in the failed entry
                 $this->profiler->recordCacheHit($class, 'stale_error', $now, $now);
+                // A negative stale entry has no value to serve: returning its null
+                // would violate the ': object' contract (TypeError). Re-throw NoData
+                // so view() maps it to an empty result, exactly like a negative hit.
+                if ($existingEntry->isNegative) {
+                    throw new NoDataException($class, 'No data (stale error)');
+                }
                 return $existingEntry->value;
             }
             throw $e;

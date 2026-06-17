@@ -545,6 +545,129 @@ final class CachingViewModelDecoratorTest extends TestCase
         static::assertNull($storedEntry->value);
     }
 
+    public function testStaleNegativeServedOnErrorRethrowsNoDataInsteadOfReturningNull(): void
+    {
+        // A negative entry aged past the SWR window (maxAge + SWR = 900) but still
+        // within the stale-if-error window (maxAge + SIE = 86_700). get() therefore
+        // takes the cache-miss path and attempts a fresh resolution, which fails
+        // with a real error, landing in the stale-on-error branch.
+        $entry = new CacheEntry(
+            value: null,
+            createdAt: time() - 5000,
+            maxAge: 300,
+            staleWhileRevalidate: 600,
+            staleIfError: 86_400,
+            isNegative: true,
+        );
+        static::assertFalse($entry->isStaleRevalidatable(), 'fixture must be past the SWR window');
+        static::assertTrue($entry->isStaleServableOnError(), 'fixture must still be servable on error');
+
+        // resolve() rejects with a real error (NOT NoData), so the stale-on-error
+        // branch is hit. For a negative existing entry there is no value to serve.
+        $viewModel = new class implements CacheableViewModel {
+            /**
+             * @throws ViewModelResolutionException
+             */
+            #[\Override]
+            public function resolve(ViewContext $viewContext, RequestContext $requestContext): Future
+            {
+                return \Amp\async(static function (): object {
+                    throw new ViewModelResolutionException('CacheableViewModel', 'Backend down');
+                });
+            }
+
+            #[\Override]
+            public function getCacheKey(ViewContext $viewContext, RequestContext $requestContext): string
+            {
+                return 'test_key';
+            }
+
+            #[\Override]
+            public function getCacheTags(ViewContext $viewContext, RequestContext $requestContext): array
+            {
+                return ['tag1'];
+            }
+
+            #[\Override]
+            public function getMaxAge(): int
+            {
+                return 300;
+            }
+
+            #[\Override]
+            public function getStaleWhileRevalidate(): int
+            {
+                return 600;
+            }
+
+            #[\Override]
+            public function getStaleIfError(): int
+            {
+                return 86_400;
+            }
+        };
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $cache = $this->createStub(SwrCacheInterface::class);
+        $cache->method('get')->willReturn($entry);
+
+        $inner = $this->createStub(ViewModelManagerInterface::class);
+
+        $decorator = new CachingViewModelDecorator(
+            $inner,
+            $container,
+            $cache,
+            $this->createContextResolver(),
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        // A negative stale entry has value: null. Serving it on error must not
+        // return null from a ': object' method (TypeError) — it must re-throw
+        // NoDataException so view() maps it to an empty result.
+        static::expectException(NoDataException::class);
+
+        $decorator->get('CacheableViewModel');
+    }
+
+    public function testStalePositiveServedOnErrorStillReturnsCachedValue(): void
+    {
+        // Sibling of the negative case: a POSITIVE stale entry on error must keep
+        // returning its cached value unchanged.
+        $staleValue = new \stdClass();
+        $staleValue->stale = true;
+        $entry = new CacheEntry($staleValue, time() - 5000, 300, 600, 86_400);
+        static::assertFalse($entry->isStaleRevalidatable(), 'fixture must be past the SWR window');
+        static::assertTrue($entry->isStaleServableOnError(), 'fixture must still be servable on error');
+
+        $viewModel = $this->createFailingCacheableViewModel();
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $cache = $this->createStub(SwrCacheInterface::class);
+        $cache->method('get')->willReturn($entry);
+
+        $inner = $this->createStub(ViewModelManagerInterface::class);
+
+        $decorator = new CachingViewModelDecorator(
+            $inner,
+            $container,
+            $cache,
+            $this->createContextResolver(),
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        $result = $decorator->get('CacheableViewModel');
+
+        static::assertSame($staleValue, $result);
+    }
+
     public function testResolutionExceptionIsNotNegativeCached(): void
     {
         $viewModel = new class implements CacheableViewModel {
@@ -677,6 +800,82 @@ final class CachingViewModelDecoratorTest extends TestCase
         $result = $decorator->preloadWithFuture('SomeClass');
 
         static::assertSame($expectedFuture, $result);
+    }
+
+    public function testPreloadWithFutureReturnsRejectedFutureForNegativeHit(): void
+    {
+        // A fresh negative cache entry: startInflight() returns null (cache can
+        // serve it), so preloadWithFuture() falls through to get(), which throws
+        // NoDataException. That throw must NOT escape preloadWithFuture()
+        // synchronously — it must come back as a rejected Future the caller can await.
+        $entry = CacheEntry::negative(time(), 300, 3600, 86_400);
+
+        $viewModel = $this->createCacheableViewModel();
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $cache = $this->createStub(SwrCacheInterface::class);
+        $cache->method('get')->willReturn($entry);
+
+        $inner = $this->createStub(ViewModelManagerInterface::class);
+
+        $decorator = new CachingViewModelDecorator(
+            $inner,
+            $container,
+            $cache,
+            $this->createContextResolver(),
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        // Must not throw synchronously.
+        $future = $decorator->preloadWithFuture('CacheableViewModel');
+
+        static::assertInstanceOf(Future::class, $future);
+
+        // Awaiting the returned Future surfaces the NoDataException.
+        try {
+            $future->await();
+            static::fail('Expected the returned Future to reject with NoDataException');
+        } catch (NoDataException $e) {
+            static::assertSame('CacheableViewModel', $e->viewModelClass);
+        }
+    }
+
+    public function testPreloadWithFutureReturnsValueForFreshPositiveHit(): void
+    {
+        // Sibling positive case: a fresh positive entry is served by get() and the
+        // returned Future completes with that cached value.
+        $cachedValue = new \stdClass();
+        $cachedValue->cached = true;
+        $entry = new CacheEntry($cachedValue, time(), 300, 3600, 86_400);
+
+        $viewModel = $this->createCacheableViewModel();
+
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $cache = $this->createStub(SwrCacheInterface::class);
+        $cache->method('get')->willReturn($entry);
+
+        $inner = $this->createStub(ViewModelManagerInterface::class);
+
+        $decorator = new CachingViewModelDecorator(
+            $inner,
+            $container,
+            $cache,
+            $this->createContextResolver(),
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+
+        $future = $decorator->preloadWithFuture('CacheableViewModel');
+
+        static::assertInstanceOf(Future::class, $future);
+        static::assertSame($cachedValue, $future->await());
     }
 
     public function testPreloadedCacheableViewModelIsResolvedOnceAndConsumedByGet(): void
