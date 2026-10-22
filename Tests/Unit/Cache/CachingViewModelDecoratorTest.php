@@ -168,6 +168,74 @@ final class CachingViewModelDecoratorTest extends TestCase
         static::assertSame($freshValue, $result);
     }
 
+    public function testAllIncludesCacheMissResolvedViewModelAfterInflightConsumed(): void
+    {
+        $freshValue = new \stdClass();
+        $decorator = $this->createDecoratorForAll($this->createCacheableViewModel($freshValue), null);
+
+        $decorator->preload('CacheableViewModel');
+        static::assertSame($freshValue, $decorator->get('CacheableViewModel'));
+
+        static::assertSame(['CacheableViewModel' => $freshValue], $decorator->all());
+    }
+
+    public function testAllIncludesCacheMissResolvedWithoutPreload(): void
+    {
+        $freshValue = new \stdClass();
+        $decorator = $this->createDecoratorForAll($this->createCacheableViewModel($freshValue), null);
+
+        $decorator->get('CacheableViewModel');
+
+        static::assertSame(['CacheableViewModel' => $freshValue], $decorator->all());
+    }
+
+    public function testAllIncludesCacheHitViewModel(): void
+    {
+        $cached = new \stdClass();
+        $entry = new CacheEntry($cached, time(), 300, 3600, 86400);
+        $decorator = $this->createDecoratorForAll($this->createCacheableViewModel(), $entry);
+
+        $decorator->get('CacheableViewModel');
+
+        static::assertSame(['CacheableViewModel' => $cached], $decorator->all());
+    }
+
+    public function testResetClearsResolvedViewModelsFromAll(): void
+    {
+        $cached = new \stdClass();
+        $entry = new CacheEntry($cached, time(), 300, 3600, 86400);
+        $decorator = $this->createDecoratorForAll($this->createCacheableViewModel(), $entry);
+
+        $decorator->get('CacheableViewModel');
+        static::assertCount(1, $decorator->all());
+
+        $decorator->reset();
+
+        static::assertSame([], $decorator->all());
+    }
+
+    private function createDecoratorForAll(CacheableViewModel $viewModel, ?CacheEntry $entry): CachingViewModelDecorator
+    {
+        $container = $this->createStub(ContainerInterface::class);
+        $container->method('has')->willReturn(true);
+        $container->method('get')->willReturn($viewModel);
+
+        $cache = $this->createStub(SwrCacheInterface::class);
+        $cache->method('get')->willReturn($entry);
+
+        $inner = $this->createStub(ViewModelManagerInterface::class);
+        $inner->method('all')->willReturn([]);
+
+        return new CachingViewModelDecorator(
+            $inner,
+            $container,
+            $cache,
+            $this->createContextResolver(),
+            $this->createProfiler(),
+            new TimeEpoch(),
+        );
+    }
+
     public function testStaleRevalidatableReturnsStaleAndTriggersBackgroundRevalidation(): void
     {
         $staleValue = new \stdClass();
