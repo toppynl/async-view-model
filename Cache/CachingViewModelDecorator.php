@@ -39,6 +39,15 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
      */
     private array $inflight = [];
 
+    /**
+     * Cacheable view models already served by get() during this request (fresh
+     * fetch, completed fetch, cache hit, stale hit), so all() keeps reporting
+     * them after their in-flight entry is consumed. Cleared by reset().
+     *
+     * @var array<class-string, object>
+     */
+    private array $resolved = [];
+
     public function __construct(
         private readonly ViewModelManagerInterface $inner,
         private readonly ContainerInterface $viewModels,
@@ -114,7 +123,7 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
     #[\Override]
     public function all(): array
     {
-        return [...$this->inflight, ...$this->inner->all()];
+        return [...$this->inflight, ...$this->inner->all(), ...$this->resolved];
     }
 
     /**
@@ -147,7 +156,7 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
                 if ($entry->isNegative) {
                     throw new NoDataException($class, 'No data (cached)');
                 }
-                return $entry->value;
+                return $this->resolved[$class] = $entry->value;
             }
 
             if ($entry->isStaleRevalidatable()) {
@@ -157,7 +166,7 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
                 if ($entry->isNegative) {
                     throw new NoDataException($class, 'No data (stale)');
                 }
-                return $entry->value;
+                return $this->resolved[$class] = $entry->value;
             }
         }
 
@@ -169,6 +178,7 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
     public function reset(): void
     {
         $this->inflight = [];
+        $this->resolved = [];
     }
 
     /**
@@ -264,7 +274,7 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
             $value = $future->await();
             $this->profiler->finish($class, $value);
             $this->store($viewModel, $key, $value, $viewContext, $requestContext);
-            return $value;
+            return $this->resolved[$class] = $value;
         } catch (NoDataException $e) {
             // A legitimately empty resolution: store a negative entry so the
             // empty/404 case is served from cache instead of re-fetching on
@@ -290,7 +300,7 @@ final class CachingViewModelDecorator implements ViewModelManagerInterface, Rese
                 if ($existingEntry->isNegative) {
                     throw new NoDataException($class, 'No data (stale error)');
                 }
-                return $existingEntry->value;
+                return $this->resolved[$class] = $existingEntry->value;
             }
             throw $e;
         }
